@@ -1,0 +1,8 @@
+{
+	"appId": "com.gamingshell.app",
+	"appName": "Gaming Shell",
+	"webDir": "dist",
+	"server": {
+		"androidScheme": "https"
+	}
+}

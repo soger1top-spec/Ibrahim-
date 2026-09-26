@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Gaming Shell</string>
+    <string name="title_activity_main">Gaming Shell</string>
+    <string name="package_name">com.gamingshell.app</string>
+    <string name="custom_url_scheme">com.gamingshell.app</string>
+</resources>
