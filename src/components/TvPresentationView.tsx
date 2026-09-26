@@ -23,8 +23,6 @@ import type { DisplayInfo } from '../services/externalDisplay';
 import { controllerBus } from '../services/controllerBus';
 import { multiControllerService, ConnectedPlayer } from '../services/multiControllerService';
 import { CarFootballGame } from '../games/CarFootballGame';
-import { MazeChaseGame } from '../games/MazeChaseGame';
-import { CoreShiftGame } from '../games/CoreShiftGame';
 import { SunsetHighwayGame } from '../games/SunsetHighwayGame';
 
 interface TvPresentationViewProps {
@@ -32,7 +30,7 @@ interface TvPresentationViewProps {
 }
 
 type TvSection = 'library' | 'controller' | 'specs';
-type ActiveGame = 'car_football' | 'maze_chase' | 'core_shift' | 'sunset_highway' | null;
+type ActiveGame = 'car_football' | 'sunset_highway' | null;
 
 export function TvPresentationView({ initialDisplay }: TvPresentationViewProps) {
   const [displayInfo, setDisplayInfo] = useState<DisplayInfo | null>(() => {
@@ -144,7 +142,7 @@ export function TvPresentationView({ initialDisplay }: TvPresentationViewProps) 
             return nextTab;
           });
         } else if (activeSection === 'library') {
-          setFocusedCardIndex(i => (i - 1 + 4) % 4);
+          setFocusedCardIndex(i => (i - 1 + 2) % 2);
         }
       } else if (btn === 'RIGHT') {
         if (focusedFocusArea === 'tabs') {
@@ -156,7 +154,7 @@ export function TvPresentationView({ initialDisplay }: TvPresentationViewProps) 
             return nextTab;
           });
         } else if (activeSection === 'library') {
-          setFocusedCardIndex(i => (i + 1) % 4);
+          setFocusedCardIndex(i => (i + 1) % 2);
         }
       }
 
@@ -169,9 +167,7 @@ export function TvPresentationView({ initialDisplay }: TvPresentationViewProps) 
           setFocusedFocusArea('cards');
         } else if (activeSection === 'library') {
           if (focusedCardIndex === 0) setActiveGame('car_football');
-          else if (focusedCardIndex === 1) setActiveGame('maze_chase');
-          else if (focusedCardIndex === 2) setActiveGame('core_shift');
-          else if (focusedCardIndex === 3) setActiveGame('sunset_highway');
+          else if (focusedCardIndex === 1) setActiveGame('sunset_highway');
         }
       }
     } else if (cmd.type === 'stick_move' && cmd.stick) {
@@ -211,7 +207,7 @@ export function TvPresentationView({ initialDisplay }: TvPresentationViewProps) 
                 return nextTab;
               });
             } else if (activeSection === 'library') {
-              setFocusedCardIndex(i => (i - 1 + 4) % 4);
+              setFocusedCardIndex(i => (i - 1 + 2) % 2);
             }
           } else if (dir === 'RIGHT') {
             if (focusedFocusArea === 'tabs') {
@@ -223,7 +219,7 @@ export function TvPresentationView({ initialDisplay }: TvPresentationViewProps) 
                 return nextTab;
               });
             } else if (activeSection === 'library') {
-              setFocusedCardIndex(i => (i + 1) % 4);
+              setFocusedCardIndex(i => (i + 1) % 2);
             }
           }
         }
@@ -397,30 +393,6 @@ export function TvPresentationView({ initialDisplay }: TvPresentationViewProps) 
           </button>
         </div>
 
-        {renderExtraControllerModal()}
-      </div>
-    );
-  }
-
-  if (activeGame === 'maze_chase') {
-    return (
-      <div className="w-screen h-screen bg-slate-950 overflow-hidden relative">
-        <MazeChaseGame
-          onBackToMenu={() => setActiveGame(null)}
-          controllerCommand={latestCommand}
-        />
-        {renderExtraControllerModal()}
-      </div>
-    );
-  }
-
-  if (activeGame === 'core_shift') {
-    return (
-      <div className="w-screen h-screen bg-slate-950 overflow-hidden relative">
-        <CoreShiftGame
-          onBackToMenu={() => setActiveGame(null)}
-          controllerCommand={latestCommand}
-        />
         {renderExtraControllerModal()}
       </div>
     );
@@ -620,8 +592,8 @@ export function TvPresentationView({ initialDisplay }: TvPresentationViewProps) 
               </div>
             </div>
 
-            {/* FOUR INDEPENDENT GAMES CARDS */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+            {/* TWO INDEPENDENT GAMES CARDS SIDE BY SIDE */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto">
               {/* GAME 1: CAR FOOTBALL */}
               <div
                 onClick={() => {
@@ -629,206 +601,100 @@ export function TvPresentationView({ initialDisplay }: TvPresentationViewProps) 
                   setFocusedFocusArea('cards');
                   setActiveGame('car_football');
                 }}
-                className={`rounded-3xl p-6 transition-all duration-300 cursor-pointer flex flex-col justify-between min-h-[320px] border ${
+                className={`rounded-3xl p-7 transition-all duration-300 cursor-pointer flex flex-col justify-between min-h-[340px] border ${
                   focusedFocusArea === 'cards' && focusedCardIndex === 0
-                    ? 'bg-gradient-to-b from-blue-950/80 to-slate-900/90 border-blue-400 shadow-2xl shadow-blue-600/40 scale-[1.04] ring-4 ring-blue-400/50'
-                    : 'bg-slate-900/50 border-slate-800/80 hover:border-slate-700'
+                    ? 'bg-gradient-to-b from-blue-950/90 to-slate-900/95 border-blue-400 shadow-2xl shadow-blue-600/40 scale-[1.04] ring-4 ring-blue-400/50'
+                    : 'bg-slate-900/60 border-slate-800/80 hover:border-slate-700'
                 }`}
               >
                 <div className="flex items-center justify-between">
-                  <span className="px-3 py-1 rounded-xl text-xs font-mono font-bold bg-blue-950/80 text-blue-300 border border-blue-800/60">
+                  <span className="px-3.5 py-1 rounded-xl text-xs font-mono font-bold bg-blue-950/80 text-blue-300 border border-blue-800/60">
                     لعبة #1
                   </span>
-                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-blue-500 text-white uppercase tracking-wider">
+                  <span className="px-3 py-1 rounded-full text-[11px] font-bold bg-blue-500 text-white uppercase tracking-wider">
                     لاعبين متعددين
                   </span>
                 </div>
 
-                <div className="my-5 flex flex-col items-center text-center space-y-3">
+                <div className="my-6 flex flex-col items-center text-center space-y-4">
                   <div
-                    className={`w-16 h-16 rounded-2xl flex items-center justify-center border transition-all ${
+                    className={`w-20 h-20 rounded-2xl flex items-center justify-center border transition-all ${
                       focusedFocusArea === 'cards' && focusedCardIndex === 0
                         ? 'bg-blue-600/30 border-blue-400/60 text-blue-300 scale-110 shadow-lg'
                         : 'bg-slate-800/40 border-slate-800 text-slate-400'
                     }`}
                   >
-                    <Gamepad2 className="w-8 h-8" />
+                    <Gamepad2 className="w-10 h-10" />
                   </div>
 
-                  <div className="space-y-1">
-                    <h3 className="text-lg font-black text-white">كرة سيارات أرينا</h3>
-                    <p className="text-xs text-slate-300 line-clamp-2 leading-relaxed">
+                  <div className="space-y-1.5">
+                    <h3 className="text-xl font-black text-white">كرة سيارات أرينا</h3>
+                    <p className="text-xs text-slate-300 leading-relaxed px-2">
                       منافسة سيارات سريعة وتصادمات واقعية لتسجيل الأهداف مع تيربو ودعم تحكم متعدد.
                     </p>
                   </div>
                 </div>
 
                 <div className="pt-4 border-t border-slate-800/80 flex items-center justify-between text-xs">
-                  <span className="text-slate-400 flex items-center gap-1 font-medium text-[11px]">
-                    <Sparkles className="w-3.5 h-3.5 text-blue-400" />
-                    تحكم إضافي
+                  <span className="text-slate-400 flex items-center gap-1.5 font-medium text-[11px]">
+                    <Sparkles className="w-4 h-4 text-blue-400" />
+                    تحكم إضافي متعدد
                   </span>
-                  <span className="text-blue-300 font-bold flex items-center gap-1">
-                    <Play className="w-3.5 h-3.5 fill-current" />
+                  <span className="text-blue-300 font-bold flex items-center gap-1.5">
+                    <Play className="w-4 h-4 fill-current" />
                     تشغيل [A / X]
                   </span>
                 </div>
               </div>
 
-              {/* GAME 2: MAZE CHASE */}
+              {/* GAME 2: SUNSET HIGHWAY DRIVE 3D */}
               <div
                 onClick={() => {
                   setFocusedCardIndex(1);
                   setFocusedFocusArea('cards');
-                  setActiveGame('maze_chase');
-                }}
-                className={`rounded-3xl p-6 transition-all duration-300 cursor-pointer flex flex-col justify-between min-h-[320px] border ${
-                  focusedFocusArea === 'cards' && focusedCardIndex === 1
-                    ? 'bg-gradient-to-b from-purple-950/80 to-slate-900/90 border-purple-400 shadow-2xl shadow-purple-600/40 scale-[1.04] ring-4 ring-purple-400/50'
-                    : 'bg-slate-900/50 border-slate-800/80 hover:border-slate-700'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="px-3 py-1 rounded-xl text-xs font-mono font-bold bg-purple-950/80 text-purple-300 border border-purple-800/60">
-                    لعبة #2
-                  </span>
-                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-500 text-white uppercase tracking-wider">
-                    توليد متجدد
-                  </span>
-                </div>
-
-                <div className="my-5 flex flex-col items-center text-center space-y-3">
-                  <div
-                    className={`w-16 h-16 rounded-2xl flex items-center justify-center border transition-all ${
-                      focusedFocusArea === 'cards' && focusedCardIndex === 1
-                        ? 'bg-purple-600/30 border-purple-400/60 text-purple-300 scale-110 shadow-lg'
-                        : 'bg-slate-800/40 border-slate-800 text-slate-400'
-                    }`}
-                  >
-                    <Compass className="w-8 h-8" />
-                  </div>
-
-                  <div className="space-y-1">
-                    <h3 className="text-lg font-black text-white">متاهة الهروب</h3>
-                    <p className="text-xs text-slate-300 line-clamp-2 leading-relaxed">
-                      اهرب من الوحش المتعقب داخل متاهة متجددة إجرائياً، ميز بين الأبواب المفتوحة والفخاخ.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="pt-4 border-t border-slate-800/80 flex items-center justify-between text-xs">
-                  <span className="text-slate-400 flex items-center gap-1 font-medium text-[11px]">
-                    <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                    تعقب ذكي
-                  </span>
-                  <span className="text-purple-300 font-bold flex items-center gap-1">
-                    <Play className="w-3.5 h-3.5 fill-current" />
-                    تشغيل [A / X]
-                  </span>
-                </div>
-              </div>
-
-              {/* GAME 3: CORE SHIFT */}
-              <div
-                onClick={() => {
-                  setFocusedCardIndex(2);
-                  setFocusedFocusArea('cards');
-                  setActiveGame('core_shift');
-                }}
-                className={`rounded-3xl p-6 transition-all duration-300 cursor-pointer flex flex-col justify-between min-h-[320px] border ${
-                  focusedFocusArea === 'cards' && focusedCardIndex === 2
-                    ? 'bg-gradient-to-b from-emerald-950/80 to-slate-900/90 border-emerald-400 shadow-2xl shadow-emerald-600/40 scale-[1.04] ring-4 ring-emerald-400/50'
-                    : 'bg-slate-900/50 border-slate-800/80 hover:border-slate-700'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="px-3 py-1 rounded-xl text-xs font-mono font-bold bg-emerald-950/80 text-emerald-300 border border-emerald-800/60">
-                    لعبة #3
-                  </span>
-                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500 text-white uppercase tracking-wider">
-                    أركيد مهارة
-                  </span>
-                </div>
-
-                <div className="my-5 flex flex-col items-center text-center space-y-3">
-                  <div
-                    className={`w-16 h-16 rounded-2xl flex items-center justify-center border transition-all ${
-                      focusedFocusArea === 'cards' && focusedCardIndex === 2
-                        ? 'bg-emerald-600/30 border-emerald-400/60 text-emerald-300 scale-110 shadow-lg'
-                        : 'bg-slate-800/40 border-slate-800 text-slate-400'
-                    }`}
-                  >
-                    <Zap className="w-8 h-8" />
-                  </div>
-
-                  <div className="space-y-1">
-                    <h3 className="text-lg font-black text-white">تحول النواة</h3>
-                    <p className="text-xs text-slate-300 line-clamp-2 leading-relaxed">
-                      تحكم بنواة الطاقة، اجمع الكريستالات واحذر حواجز الليزر وتحول الساحة قبل الوقت.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="pt-4 border-t border-slate-800/80 flex items-center justify-between text-xs">
-                  <span className="text-slate-400 flex items-center gap-1 font-medium text-[11px]">
-                    <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-                    ليزر ديناميكي
-                  </span>
-                  <span className="text-emerald-300 font-bold flex items-center gap-1">
-                    <Play className="w-3.5 h-3.5 fill-current" />
-                    تشغيل [A / X]
-                  </span>
-                </div>
-              </div>
-
-              {/* GAME 4: SUNSET HIGHWAY DRIVE */}
-              <div
-                onClick={() => {
-                  setFocusedCardIndex(3);
-                  setFocusedFocusArea('cards');
                   setActiveGame('sunset_highway');
                 }}
-                className={`rounded-3xl p-6 transition-all duration-300 cursor-pointer flex flex-col justify-between min-h-[320px] border ${
-                  focusedFocusArea === 'cards' && focusedCardIndex === 3
-                    ? 'bg-gradient-to-b from-orange-950/80 to-slate-900/90 border-orange-400 shadow-2xl shadow-orange-600/40 scale-[1.04] ring-4 ring-orange-400/50'
-                    : 'bg-slate-900/50 border-slate-800/80 hover:border-slate-700'
+                className={`rounded-3xl p-7 transition-all duration-300 cursor-pointer flex flex-col justify-between min-h-[340px] border ${
+                  focusedFocusArea === 'cards' && focusedCardIndex === 1
+                    ? 'bg-gradient-to-b from-amber-950/90 to-slate-900/95 border-amber-400 shadow-2xl shadow-amber-600/40 scale-[1.04] ring-4 ring-amber-400/50'
+                    : 'bg-slate-900/60 border-slate-800/80 hover:border-slate-700'
                 }`}
               >
                 <div className="flex items-center justify-between">
-                  <span className="px-3 py-1 rounded-xl text-xs font-mono font-bold bg-orange-950/80 text-orange-300 border border-orange-800/60">
-                    لعبة #4
+                  <span className="px-3.5 py-1 rounded-xl text-xs font-mono font-bold bg-amber-950/80 text-amber-300 border border-amber-800/60">
+                    لعبة #2
                   </span>
-                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 uppercase tracking-wider">
-                    كابينة قيادة 3D
+                  <span className="px-3 py-1 rounded-full text-[11px] font-bold bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 uppercase tracking-wider font-extrabold">
+                    محرك 3D حقيقي
                   </span>
                 </div>
 
-                <div className="my-5 flex flex-col items-center text-center space-y-3">
+                <div className="my-6 flex flex-col items-center text-center space-y-4">
                   <div
-                    className={`w-16 h-16 rounded-2xl flex items-center justify-center border transition-all ${
-                      focusedFocusArea === 'cards' && focusedCardIndex === 3
-                        ? 'bg-orange-600/30 border-orange-400/60 text-orange-300 scale-110 shadow-lg'
+                    className={`w-20 h-20 rounded-2xl flex items-center justify-center border transition-all ${
+                      focusedFocusArea === 'cards' && focusedCardIndex === 1
+                        ? 'bg-amber-600/30 border-amber-400/60 text-amber-300 scale-110 shadow-lg'
                         : 'bg-slate-800/40 border-slate-800 text-slate-400'
                     }`}
                   >
-                    <Sparkles className="w-8 h-8 text-amber-400" />
+                    <Sparkles className="w-10 h-10 text-amber-400 animate-pulse" />
                   </div>
 
-                  <div className="space-y-1">
-                    <h3 className="text-lg font-black text-white">طريق الغروب السريع</h3>
-                    <p className="text-xs text-slate-300 line-clamp-2 leading-relaxed">
-                      منظور داخلي من كابينة القيادة والدركسون، ظلال غروب الشمس الطويلة وحركة مرور ذكية.
+                  <div className="space-y-1.5">
+                    <h3 className="text-xl font-black text-white">طريق الغروب السريع 3D</h3>
+                    <p className="text-xs text-slate-300 leading-relaxed px-2">
+                      كابينة قيادة 3D تفاعلية مع دركسون متحرك ورؤية حقيقية وانعكاسات مرئية مصممة بمحرك Three.js.
                     </p>
                   </div>
                 </div>
 
                 <div className="pt-4 border-t border-slate-800/80 flex items-center justify-between text-xs">
-                  <span className="text-slate-400 flex items-center gap-1 font-medium text-[11px]">
-                    <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                    ظلال وانعكاسات حية
+                  <span className="text-slate-400 flex items-center gap-1.5 font-medium text-[11px]">
+                    <Sparkles className="w-4 h-4 text-amber-400" />
+                    انعكاسات حقيقية 3D
                   </span>
-                  <span className="text-orange-300 font-bold flex items-center gap-1">
-                    <Play className="w-3.5 h-3.5 fill-current" />
+                  <span className="text-amber-300 font-bold flex items-center gap-1.5">
+                    <Play className="w-4 h-4 fill-current" />
                     تشغيل [A / X]
                   </span>
                 </div>
