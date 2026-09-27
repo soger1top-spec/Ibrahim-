@@ -29,11 +29,11 @@ const LANES_COUNT = 4;
 const ROAD_TOTAL_WIDTH = LANE_WIDTH * LANES_COUNT; // 14.4 units
 const LANE_POSITIONS = [-5.4, -1.8, 1.8, 5.4]; // X center for lanes 0, 1, 2, 3
 
-const MAX_SPEED_KMH = 220;
+const MAX_SPEED_KMH = 140; // Reduced top speed for realistic drive
 const MIN_SPEED_KMH = 0;
-const ACCEL_RATE = 85; // km/h per sec
-const BRAKE_RATE = 140;
-const NATURAL_DECEL = 28;
+const ACCEL_RATE = 40; // Gentle acceleration
+const BRAKE_RATE = 90;
+const NATURAL_DECEL = 15;
 
 const ROAD_LENGTH = 400; // Visible road length in 3D units
 const TRAFFIC_COUNT = 10;
@@ -65,7 +65,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     return parseInt(localStorage.getItem('sunset_drive_3d_highscore') || '0', 10);
   });
   const [distanceKm, setDistanceKm] = useState(0);
-  const [currentSpeed, setCurrentSpeed] = useState(100); // km/h
+  const [currentSpeed, setCurrentSpeed] = useState(60); // km/h
   const [combo, setCombo] = useState(1);
   const [nearMissAlert, setNearMissAlert] = useState<string | null>(null);
   const [isHighBeaming, setIsHighBeaming] = useState(false);
@@ -73,11 +73,12 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
 
   // Gameplay Refs for 60FPS Three.js Loop
   const gameStateRef = useRef({
-    speedKmh: 100,
-    targetSpeedKmh: 100,
+    speedKmh: 60, // Realistic, calm starting speed
+    targetSpeedKmh: 60,
     playerX: LANE_POSITIONS[1], // Start in lane 1 (-1.8)
     playerZ: 0,
     steerAngle: 0, // -1 (left) to 1 (right)
+    smoothSteer: 0, // Damped smooth steering
     isAccelerating: false,
     isBraking: false,
     highBeamTimer: 0,
@@ -389,6 +390,17 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     mirrorGlassMesh.position.set(0, 1.42, -0.38);
     cockpitGroup.add(mirrorMesh);
     cockpitGroup.add(mirrorGlassMesh);
+
+    // 5. Player Car 3D Bonnet / Hood visible through Front Windshield
+    const bonnetGeo = new THREE.BoxGeometry(1.85, 0.45, 1.9);
+    const bonnetMat = new THREE.MeshStandardMaterial({
+      color: 0x312e81, // Sleek Indigo metallic car paint
+      metalness: 0.88,
+      roughness: 0.12
+    });
+    const bonnetMesh = new THREE.Mesh(bonnetGeo, bonnetMat);
+    bonnetMesh.position.set(0.4, 0.45, -1.6);
+    cockpitGroup.add(bonnetMesh);
 
     return { cockpitGroup, steeringWheelGroup };
   };
@@ -792,31 +804,32 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       const t3 = threeRef.current;
       if (!t3 || s.isPaused || s.isGameOver) return;
 
-      // 1. Acceleration & Speed Physics
+      // 1. Acceleration & Speed Physics (50% Slower Base Velocity)
       if (s.isAccelerating) {
         s.speedKmh = Math.min(MAX_SPEED_KMH, s.speedKmh + ACCEL_RATE * dt);
       } else if (s.isBraking) {
         s.speedKmh = Math.max(MIN_SPEED_KMH, s.speedKmh - BRAKE_RATE * dt);
       } else {
-        s.speedKmh = Math.max(30, s.speedKmh - NATURAL_DECEL * dt);
+        s.speedKmh = Math.max(20, s.speedKmh - NATURAL_DECEL * dt);
       }
 
-      // Convert speed from km/h to 3D world units per second
-      const worldSpeed = (s.speedKmh / 3.6) * 0.45;
+      // Convert speed from km/h to 3D world units per second (50% Slower for relaxing realistic driving)
+      const worldSpeed = (s.speedKmh / 3.6) * 0.225;
 
-      // 2. Player Steering Physics (Smooth lateral movement)
-      const steerSpeed = 11.5 * (0.6 + s.speedKmh / 200);
-      s.playerX += s.steerAngle * steerSpeed * dt;
+      // 2. Smooth, Calm Steering Physics (Damped Lerp)
+      s.smoothSteer += (s.steerAngle - s.smoothSteer) * Math.min(1, dt * 7.0);
+      const steerSpeed = 5.2 * (0.8 + s.speedKmh / 160);
+      s.playerX += s.smoothSteer * steerSpeed * dt;
       // Clamp player X to road boundaries
-      s.playerX = Math.max(-ROAD_TOTAL_WIDTH / 2 + 0.9, Math.min(ROAD_TOTAL_WIDTH / 2 - 0.9, s.playerX));
+      s.playerX = Math.max(-ROAD_TOTAL_WIDTH / 2 + 1.0, Math.min(ROAD_TOTAL_WIDTH / 2 - 1.0, s.playerX));
 
       // Update 3D Camera & Cockpit Position
-      t3.camera.position.x = s.playerX - 0.4; // Camera follows car X
-      t3.camera.rotation.z = -s.steerAngle * 0.06; // Cockpit roll during sharp steering
+      t3.camera.position.x = s.playerX - 0.4; // Camera follows driver seat
+      t3.camera.rotation.z = -s.smoothSteer * 0.04; // Subtle, gentle cockpit roll
 
-      // Rotate 3D Steering Wheel with steering input
+      // Rotate 3D Steering Wheel smoothly with steering input
       if (t3.steeringWheelGroup) {
-        t3.steeringWheelGroup.rotation.z = -s.steerAngle * 2.2;
+        t3.steeringWheelGroup.rotation.z = -s.smoothSteer * 2.2;
       }
 
       // 3. High Beam Timer & Spotlight Intensity
