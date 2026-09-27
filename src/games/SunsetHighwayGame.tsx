@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
-import { RotateCcw, Lightbulb } from 'lucide-react';
+import { RotateCcw, Lightbulb, Compass, Navigation } from 'lucide-react';
 import { sounds } from './soundFx';
 import { controllerBus } from '../services/controllerBus';
 
@@ -10,19 +10,19 @@ interface SunsetHighwayGameProps {
 }
 
 // -------------------------------------------------------------
-// GAMEPLAY CONFIGURATION
+// GAMEPLAY CONFIGURATION (Balanced Realistic Cruising Speed)
 // -------------------------------------------------------------
 const LANES_COUNT = 4;
 const LANE_WIDTH = 3.6;
 const ROAD_TOTAL_WIDTH = LANE_WIDTH * LANES_COUNT; // 14.4 units
 const LANE_POSITIONS = [-5.4, -1.8, 1.8, 5.4];
 
-const MAX_SPEED_KMH = 150;
+const MAX_SPEED_KMH = 125;
 const MIN_SPEED_KMH = 30;
-const BASE_CRUISE_SPEED = 85;
-const ACCEL_RATE = 45;
-const BRAKE_RATE = 95;
-const NATURAL_DECEL_RATE = 18;
+const BASE_CRUISE_SPEED = 75; // Natural smooth cruising speed
+const ACCEL_RATE = 30;
+const BRAKE_RATE = 75;
+const NATURAL_DECEL_RATE = 14;
 
 const ROAD_SEGMENT_LENGTH = 360;
 const TRAFFIC_COUNT = 6;
@@ -54,6 +54,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
   const [currentSpeed, setCurrentSpeed] = useState(BASE_CRUISE_SPEED);
   const [nearMissAlert, setNearMissAlert] = useState<string | null>(null);
   const [isHighBeaming, setIsHighBeaming] = useState(false);
+  const [trafficPositions, setTrafficPositions] = useState<{ x: number; z: number }[]>([]);
 
   const highScoreRef = useRef(highScore);
 
@@ -65,6 +66,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     smoothSteer: 0,
     isAccelerating: false,
     isBraking: false,
+    isHighBeamActive: false,
     highBeamTimer: 0,
     scoreAcc: 0,
     distanceAccKm: 0,
@@ -74,6 +76,12 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     isGameOver: false,
     isPaused: false
   });
+
+  // Sound Synth References (Engine sound & ambient synthwave loop)
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const engineOscRef = useRef<OscillatorNode | null>(null);
+  const engineGainRef = useRef<GainNode | null>(null);
+  const synthwaveTimerRef = useRef<number | null>(null);
 
   // Three.js Scene References
   const threeRef = useRef<{
@@ -87,11 +95,95 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     gpsTexture: THREE.CanvasTexture;
     gpsCtx: CanvasRenderingContext2D | null;
     roadPlane: THREE.Mesh;
+    terrainPlane: THREE.Mesh;
     laneLines: THREE.Mesh[];
+    catEyes: THREE.Mesh[];
     sceneryItems: THREE.Group[];
     trafficPool: NPCTrafficCar[];
-    headlightSpot: THREE.SpotLight;
+    headlightSpotL: THREE.SpotLight;
+    headlightSpotR: THREE.SpotLight;
   } | null>(null);
+
+  // -------------------------------------------------------------
+  // AUDIO ENGINE (Engine sound revs & ambient Synthwave chords)
+  // -------------------------------------------------------------
+  const initAudio = useCallback(() => {
+    if (audioContextRef.current) return;
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      audioContextRef.current = ctx;
+
+      // Engine sound oscillator
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(45, ctx.currentTime);
+      gain.gain.setValueAtTime(0.04, ctx.currentTime);
+
+      // Low-pass filter for engine warmth
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(320, ctx.currentTime);
+
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+
+      engineOscRef.current = osc;
+      engineGainRef.current = gain;
+
+      // Ambient Synthwave Chord Progression Generator
+      const synthChords = [
+        [146.83, 220.0, 261.63], // Dm
+        [174.61, 220.0, 261.63], // F
+        [130.81, 196.0, 261.63], // C
+        [196.0, 246.94, 293.66]  // G
+      ];
+      let chordIndex = 0;
+
+      const playNextChord = () => {
+        if (!audioContextRef.current || audioContextRef.current.state === 'suspended') return;
+        const now = audioContextRef.current.currentTime;
+        const freqs = synthChords[chordIndex % synthChords.length];
+        chordIndex++;
+
+        freqs.forEach(freq => {
+          if (!audioContextRef.current) return;
+          const sOsc = audioContextRef.current.createOscillator();
+          const sGain = audioContextRef.current.createGain();
+          sOsc.type = 'sine';
+          sOsc.frequency.setValueAtTime(freq, now);
+
+          sGain.gain.setValueAtTime(0.015, now);
+          sGain.gain.linearRampToValueAtTime(0.035, now + 1.2);
+          sGain.gain.linearRampToValueAtTime(0.001, now + 3.8);
+
+          sOsc.connect(sGain);
+          sGain.connect(audioContextRef.current.destination);
+          sOsc.start(now);
+          sOsc.stop(now + 3.8);
+        });
+      };
+
+      synthwaveTimerRef.current = window.setInterval(playNextChord, 4000);
+      playNextChord();
+    } catch {
+      // Audio context might be restricted before user gesture
+    }
+  }, []);
+
+  // Update engine audio pitch dynamically with speed
+  const updateEngineAudio = useCallback((speed: number) => {
+    if (!audioContextRef.current || !engineOscRef.current || !engineGainRef.current) return;
+    try {
+      const targetFreq = 42 + (speed / MAX_SPEED_KMH) * 85;
+      engineOscRef.current.frequency.setTargetAtTime(targetFreq, audioContextRef.current.currentTime, 0.1);
+      engineGainRef.current.gain.setTargetAtTime(0.035 + (speed / MAX_SPEED_KMH) * 0.04, audioContextRef.current.currentTime, 0.1);
+    } catch {}
+  }, []);
 
   // -------------------------------------------------------------
   // BUILD 3D TRAFFIC VEHICLES (Low-poly & High performance)
@@ -100,29 +192,24 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     const group = new THREE.Group();
 
     if (isTruck) {
-      // White delivery box truck
       const cabMat = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.5, metalness: 0.2 });
       const boxMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.6, metalness: 0.1 });
       const darkMat = new THREE.MeshBasicMaterial({ color: 0x09090b });
 
-      // Cab
       const cab = new THREE.Mesh(new THREE.BoxGeometry(2.0, 1.4, 1.6), cabMat);
       cab.position.set(0, 0.9, -1.8);
       cab.castShadow = true;
       group.add(cab);
 
-      // Windshield
       const win = new THREE.Mesh(new THREE.BoxGeometry(1.85, 0.6, 0.05), darkMat);
       win.position.set(0, 1.15, -2.62);
       group.add(win);
 
-      // Box Container
       const box = new THREE.Mesh(new THREE.BoxGeometry(2.2, 2.2, 4.2), boxMat);
       box.position.set(0, 1.5, 0.9);
       box.castShadow = true;
       group.add(box);
 
-      // Taillights (Glowing Red)
       const tlMat = new THREE.MeshBasicMaterial({ color: 0xff1e1e });
       const tlL = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.2, 0.05), tlMat);
       tlL.position.set(-0.85, 0.8, 3.02);
@@ -132,23 +219,19 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       tlR.position.set(0.85, 0.8, 3.02);
       group.add(tlR);
     } else {
-      // Passenger Sedan Car
       const bodyMat = new THREE.MeshStandardMaterial({ color: colorHex, roughness: 0.4, metalness: 0.5 });
       const glassMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
 
-      // Body
       const body = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.7, 4.0), bodyMat);
       body.position.y = 0.55;
       body.castShadow = true;
       group.add(body);
 
-      // Cabin
       const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.6, 2.1), glassMat);
       cabin.position.set(0, 1.1, -0.2);
       cabin.castShadow = true;
       group.add(cabin);
 
-      // Taillights
       const tlMat = new THREE.MeshBasicMaterial({ color: 0xff1e1e });
       const tlL = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.16, 0.05), tlMat);
       tlL.position.set(-0.65, 0.65, 2.02);
@@ -159,7 +242,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       group.add(tlR);
     }
 
-    // Heavy High-Contrast Ground Shadow
+    // High-Contrast Ground Shadow
     const shadowMat = new THREE.MeshBasicMaterial({
       color: 0x050508,
       transparent: true,
@@ -170,7 +253,6 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     shadow.position.y = 0.02;
     group.add(shadow);
 
-    // Wheels
     const wheels: THREE.Mesh[] = [];
     const wheelGeo = new THREE.CylinderGeometry(0.32, 0.32, 0.2, 12);
     wheelGeo.rotateZ(Math.PI / 2);
@@ -190,66 +272,89 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
   };
 
   // -------------------------------------------------------------
-  // BUILD TRUE DRIVER PERSPECTIVE 3D COCKPIT WITH REAL 3D STEERING WHEEL
+  // BUILD FULL LUXURY COCKPIT (Driver View: Wheel, Cluster, Shifter, Vents, Mirrors)
   // -------------------------------------------------------------
   const buildTrueDriverCockpit = (playerCarGroup: THREE.Group, camera: THREE.PerspectiveCamera) => {
-    // 1. Camera is precisely situated at Driver Eye Level (Left Seat)
-    camera.position.set(-0.36, 1.08, 0.15);
-    camera.rotation.set(-0.02, 0, 0); // Natural slight downward glance toward road
+    // 1. Camera situated at natural Driver Eye Level pulled back so the cockpit is fully visible
+    camera.position.set(-0.36, 1.14, 0.48);
+    camera.rotation.set(-0.04, 0, 0); // Gentle downward glance taking in both road and cockpit
     camera.up.set(0, 1, 0);
     playerCarGroup.add(camera);
 
     // Materials
-    const darkLeatherMat = new THREE.MeshStandardMaterial({ color: 0x11141c, roughness: 0.7, metalness: 0.2 });
-    const dashTrimMat = new THREE.MeshStandardMaterial({ color: 0x1e2430, roughness: 0.5, metalness: 0.3 });
+    const darkLeatherMat = new THREE.MeshStandardMaterial({ color: 0x0f131a, roughness: 0.7, metalness: 0.2 });
+    const dashTrimMat = new THREE.MeshStandardMaterial({ color: 0x1a202c, roughness: 0.5, metalness: 0.3 });
     const chromeMat = new THREE.MeshStandardMaterial({ color: 0xd4d4d8, roughness: 0.15, metalness: 0.9 });
-    const carbonMat = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.4, metalness: 0.6 });
-    const carBonnetPaintMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.2, metalness: 0.7 });
+    const carbonMat = new THREE.MeshStandardMaterial({ color: 0x141824, roughness: 0.4, metalness: 0.6 });
+    const carBonnetPaintMat = new THREE.MeshStandardMaterial({ color: 0x272e3d, roughness: 0.2, metalness: 0.7 });
 
-    // 2. Metallic Car Bonnet (Hood) Extending Forward Outside Windshield
+    // 2. Metallic Car Bonnet (Hood) Extending Forward in Front of Windshield
     const bonnetMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(1.85, 0.12, 1.9),
+      new THREE.BoxGeometry(1.9, 0.12, 2.1),
       carBonnetPaintMat
     );
-    bonnetMesh.position.set(0, 0.46, -1.75);
-    bonnetMesh.rotation.x = -0.06; // Sloped down towards bumper
+    bonnetMesh.position.set(0, 0.46, -1.8);
+    bonnetMesh.rotation.x = -0.06;
     bonnetMesh.castShadow = true;
     playerCarGroup.add(bonnetMesh);
 
-    // Bonnet Center Crease
-    const bonnetCrease = new THREE.Mesh(
-      new THREE.BoxGeometry(0.04, 0.025, 1.9),
-      new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.3, metalness: 0.8 })
-    );
-    bonnetCrease.position.set(0, 0.06, 0);
-    bonnetMesh.add(bonnetCrease);
-
     // 3. Lower Dashboard Base
     const dashBase = new THREE.Mesh(
-      new THREE.BoxGeometry(2.2, 0.32, 0.7),
+      new THREE.BoxGeometry(2.3, 0.35, 0.8),
       darkLeatherMat
     );
-    dashBase.position.set(0, 0.54, -0.65);
+    dashBase.position.set(0, 0.52, -0.65);
     dashBase.castShadow = true;
     playerCarGroup.add(dashBase);
 
-    // Ambient Neon LED Contour Strip running along dashboard lip
-    const neonGeo = new THREE.BoxGeometry(1.9, 0.015, 0.02);
+    // Ambient Neon LED Strip running across dashboard
+    const neonGeo = new THREE.BoxGeometry(2.0, 0.015, 0.02);
     const neonMat = new THREE.MeshBasicMaterial({ color: 0x06b6d4 });
     const ambientNeon = new THREE.Mesh(neonGeo, neonMat);
-    ambientNeon.position.set(0, 0.69, -0.58);
+    ambientNeon.position.set(0, 0.68, -0.55);
     playerCarGroup.add(ambientNeon);
 
-    // 4. Driver Instrument Cowl & Hood (Over the digital cluster behind steering wheel)
-    const cowlMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(0.55, 0.22, 0.35),
+    // 4. Center Console with Gear Shifter (القير) and Air Vents (التكييف)
+    const centerConsole = new THREE.Mesh(
+      new THREE.BoxGeometry(0.38, 0.45, 0.9),
       dashTrimMat
     );
-    cowlMesh.position.set(-0.36, 0.75, -0.68);
+    centerConsole.position.set(0.12, 0.30, -0.05);
+    playerCarGroup.add(centerConsole);
+
+    // Gear Shifter (قير السيارة الفاخر من الكروم والجلد)
+    const shifterBase = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.055, 0.02, 16), chromeMat);
+    shifterBase.position.set(0.08, 0.54, 0.05);
+    playerCarGroup.add(shifterBase);
+
+    const shifterStick = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.11, 8), chromeMat);
+    shifterStick.position.set(0.08, 0.59, 0.05);
+    playerCarGroup.add(shifterStick);
+
+    const shifterKnob = new THREE.Mesh(new THREE.SphereGeometry(0.028, 16, 16), darkLeatherMat);
+    shifterKnob.position.set(0.08, 0.65, 0.05);
+    playerCarGroup.add(shifterKnob);
+
+    // AC Air Vents (فتحات التكييف الأنيقة)
+    const ventMat = new THREE.MeshStandardMaterial({ color: 0x090d14, metalness: 0.8, roughness: 0.3 });
+    const ventL = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.04, 0.02), ventMat);
+    ventL.position.set(-0.06, 0.65, -0.58);
+    playerCarGroup.add(ventL);
+
+    const ventR = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.04, 0.02), ventMat);
+    ventR.position.set(0.06, 0.65, -0.58);
+    playerCarGroup.add(ventR);
+
+    // 5. Driver Instrument Cowl & Hood
+    const cowlMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(0.56, 0.24, 0.36),
+      dashTrimMat
+    );
+    cowlMesh.position.set(-0.36, 0.76, -0.65);
     cowlMesh.rotation.x = -0.15;
     playerCarGroup.add(cowlMesh);
 
-    // 5. Driver Digital Gauge Cluster (2D Dynamic Canvas on 3D Plane)
+    // 6. Driver Digital Gauge Cluster (Seamlessly Framed Behind Steering Wheel)
     const clusterCanvas = document.createElement('canvas');
     clusterCanvas.width = 512;
     clusterCanvas.height = 256;
@@ -258,14 +363,14 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     clusterTexture.minFilter = THREE.LinearFilter;
 
     const clusterScreen = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.42, 0.19),
+      new THREE.PlaneGeometry(0.44, 0.20),
       new THREE.MeshBasicMaterial({ map: clusterTexture })
     );
-    clusterScreen.position.set(-0.36, 0.75, -0.62);
+    clusterScreen.position.set(-0.36, 0.76, -0.58);
     clusterScreen.rotation.x = -0.16;
     playerCarGroup.add(clusterScreen);
 
-    // 6. Center Console Infotainment Display (Google Maps GPS Navigation Widescreen)
+    // 7. Center Infotainment Screen (GPS Navigation Display)
     const gpsCanvas = document.createElement('canvas');
     gpsCanvas.width = 512;
     gpsCanvas.height = 256;
@@ -273,42 +378,40 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     const gpsTexture = new THREE.CanvasTexture(gpsCanvas);
     gpsTexture.minFilter = THREE.LinearFilter;
 
-    // GPS Screen Housing Frame (Angled gently toward driver seat)
     const gpsHousing = new THREE.Mesh(
-      new THREE.BoxGeometry(0.44, 0.24, 0.05),
+      new THREE.BoxGeometry(0.38, 0.22, 0.04),
       carbonMat
     );
-    gpsHousing.position.set(0.18, 0.72, -0.65);
-    gpsHousing.rotation.y = 0.22; // Angled 12 degrees toward driver
+    gpsHousing.position.set(0.24, 0.72, -0.62);
+    gpsHousing.rotation.y = 0.25; // Angled cleanly towards driver
     gpsHousing.rotation.x = -0.12;
     playerCarGroup.add(gpsHousing);
 
     const gpsScreen = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.41, 0.21),
+      new THREE.PlaneGeometry(0.35, 0.19),
       new THREE.MeshBasicMaterial({ map: gpsTexture })
     );
-    gpsScreen.position.set(0, 0, 0.028);
+    gpsScreen.position.set(0, 0, 0.024);
     gpsHousing.add(gpsScreen);
 
-    // 7. Steering Column (Solid anchor connecting wheel to dashboard)
+    // 8. Steering Column (Solid connection from dashboard to wheel)
     const columnMesh = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.045, 0.055, 0.35, 16),
+      new THREE.CylinderGeometry(0.048, 0.058, 0.42, 16),
       darkLeatherMat
     );
-    columnMesh.position.set(-0.36, 0.65, -0.52);
-    columnMesh.rotation.x = Math.PI / 4; // 45 degrees angle into dashboard
+    columnMesh.position.set(-0.36, 0.64, -0.42);
+    columnMesh.rotation.x = Math.PI / 3.8;
     columnMesh.castShadow = true;
     playerCarGroup.add(columnMesh);
 
-    // 8. REAL 3D STEERING WHEEL (Full 3D Torus, Spokes, Hub, Paddle Shifters)
+    // 9. REAL 3D STEERING WHEEL (Full 3D Torus, Spokes, Hub, Paddle Shifters)
     const steeringWheelGroup = new THREE.Group();
-    // Positioned directly in front of Driver Seat (-0.36), raised at hands level
-    steeringWheelGroup.position.set(-0.36, 0.75, -0.38);
-    steeringWheelGroup.rotation.x = -0.24; // Ergonomic tilt facing driver eyes
+    steeringWheelGroup.position.set(-0.36, 0.76, -0.22);
+    steeringWheelGroup.rotation.x = -0.24; // Ergonomic tilt facing driver
     steeringWheelGroup.castShadow = true;
 
     // Outer Thick Leather Rim (Torus)
-    const rimGeo = new THREE.TorusGeometry(0.20, 0.026, 16, 32);
+    const rimGeo = new THREE.TorusGeometry(0.20, 0.027, 16, 36);
     const rimMat = new THREE.MeshStandardMaterial({
       color: 0x18181b,
       roughness: 0.6,
@@ -318,8 +421,8 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     rimMesh.castShadow = true;
     steeringWheelGroup.add(rimMesh);
 
-    // Top 12 o'clock Cyan Racing Alignment Ring
-    const stripeGeo = new THREE.TorusGeometry(0.20, 0.027, 8, 8, Math.PI / 10);
+    // Top 12 o'clock Racing Alignment Ring
+    const stripeGeo = new THREE.TorusGeometry(0.20, 0.028, 8, 8, Math.PI / 10);
     const stripeMat = new THREE.MeshBasicMaterial({ color: 0x06b6d4 });
     const stripeMesh = new THREE.Mesh(stripeGeo, stripeMat);
     stripeMesh.rotation.z = Math.PI / 2 - Math.PI / 20;
@@ -338,7 +441,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     hubMesh.castShadow = true;
     steeringWheelGroup.add(hubMesh);
 
-    // Golden Luxury Crest Emblem in Center
+    // Golden Luxury Crest Emblem
     const emblemGeo = new THREE.CircleGeometry(0.02, 16);
     const emblemMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
     const emblemMesh = new THREE.Mesh(emblemGeo, emblemMat);
@@ -348,24 +451,21 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     // 3 Brushed Metal / Carbon Fiber Spokes
     const spokeMat = new THREE.MeshStandardMaterial({ color: 0x52525b, roughness: 0.3, metalness: 0.8 });
 
-    // Bottom Spoke
     const spokeB = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.14, 0.01), spokeMat);
     spokeB.position.set(0, -0.075, 0);
     steeringWheelGroup.add(spokeB);
 
-    // Left Spoke
     const spokeL = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.14, 0.01), spokeMat);
     spokeL.position.set(-0.075, 0.02, 0);
     spokeL.rotation.z = Math.PI / 3;
     steeringWheelGroup.add(spokeL);
 
-    // Right Spoke
     const spokeR = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.14, 0.01), spokeMat);
     spokeR.position.set(0.075, 0.02, 0);
     spokeR.rotation.z = -Math.PI / 3;
     steeringWheelGroup.add(spokeR);
 
-    // Dual Paddle Shifters behind wheel (+ on Right, - on Left)
+    // Dual Paddle Shifters
     const paddleGeo = new THREE.BoxGeometry(0.025, 0.08, 0.01);
     const paddleL = new THREE.Mesh(paddleGeo, chromeMat);
     paddleL.position.set(-0.16, 0.03, -0.025);
@@ -377,18 +477,32 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
 
     playerCarGroup.add(steeringWheelGroup);
 
-    // 9. Slim Driver-Side A-Pillar (Frames left window edge naturally without blocking road)
+    // 10. Tucked Left A-Pillar (Shifted far left to frame window naturally without blocking sky)
     const leftPillar = new THREE.Mesh(
-      new THREE.BoxGeometry(0.06, 0.95, 0.06),
-      darkLeatherMat
+      new THREE.BoxGeometry(0.05, 1.2, 0.05),
+      new THREE.MeshStandardMaterial({ color: 0x090d14, roughness: 0.9 })
     );
-    leftPillar.position.set(-0.95, 1.05, -0.35);
-    leftPillar.rotation.z = -0.38;
+    leftPillar.position.set(-1.18, 1.15, -0.15);
+    leftPillar.rotation.z = -0.32;
     playerCarGroup.add(leftPillar);
 
-    // 10. Center-Right Rearview Mirror (Hanging above)
+    // Left Wing Mirror (مرآة جانبية عاكسة للطريق خلفك)
+    const sideMirrorGroup = new THREE.Group();
+    sideMirrorGroup.position.set(-1.12, 0.98, -0.30);
+    const sideMirrorHousing = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.09, 0.06), darkLeatherMat);
+    sideMirrorGroup.add(sideMirrorHousing);
+    const sideMirrorGlass = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.14, 0.07),
+      new THREE.MeshBasicMaterial({ color: 0x1e293b })
+    );
+    sideMirrorGlass.position.set(0, 0, 0.032);
+    sideMirrorGlass.rotation.y = 0.35;
+    sideMirrorGroup.add(sideMirrorGlass);
+    playerCarGroup.add(sideMirrorGroup);
+
+    // 11. Center Rearview Mirror (Hanging above)
     const mirrorGroup = new THREE.Group();
-    mirrorGroup.position.set(0.12, 1.35, -0.45);
+    mirrorGroup.position.set(0.08, 1.40, -0.25);
 
     const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 0.08, 8), darkLeatherMat);
     stem.position.y = 0.04;
@@ -406,12 +520,18 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
 
     playerCarGroup.add(mirrorGroup);
 
-    // 11. Headlight Spotlight
-    const headlightSpot = new THREE.SpotLight(0xfff5ea, 5, 130, Math.PI / 4, 0.5, 1);
-    headlightSpot.position.set(0, 0.4, -1.0);
-    headlightSpot.target.position.set(0, 0, -45);
-    playerCarGroup.add(headlightSpot);
-    playerCarGroup.add(headlightSpot.target);
+    // 12. DUAL POWERFUL HEADLIGHT SPOTLIGHTS (إضاءة كشافات واقعية تنير الأسفلت بوضوح)
+    const headlightSpotL = new THREE.SpotLight(0xfff7ed, 6, 140, Math.PI / 3.8, 0.6, 1);
+    headlightSpotL.position.set(-0.7, 0.45, -1.2);
+    headlightSpotL.target.position.set(-0.7, 0, -45);
+    playerCarGroup.add(headlightSpotL);
+    playerCarGroup.add(headlightSpotL.target);
+
+    const headlightSpotR = new THREE.SpotLight(0xfff7ed, 6, 140, Math.PI / 3.8, 0.6, 1);
+    headlightSpotR.position.set(0.7, 0.45, -1.2);
+    headlightSpotR.target.position.set(0.7, 0, -45);
+    playerCarGroup.add(headlightSpotR);
+    playerCarGroup.add(headlightSpotR.target);
 
     return {
       steeringWheelGroup,
@@ -419,17 +539,17 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       clusterCtx,
       gpsTexture,
       gpsCtx,
-      headlightSpot
+      headlightSpotL,
+      headlightSpotR
     };
   };
 
   // -------------------------------------------------------------
-  // DRAW DYNAMIC 2D CLUSTER & GPS MAP CANVASES (Crisp & High-Performance)
+  // DRAW DYNAMIC CLUSTER & GPS CANVASES
   // -------------------------------------------------------------
   const updateClusterScreen = (ctx: CanvasRenderingContext2D, speed: number, distance: number) => {
     ctx.clearRect(0, 0, 512, 256);
 
-    // Background
     ctx.fillStyle = '#080c14';
     ctx.fillRect(0, 0, 512, 256);
 
@@ -438,7 +558,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     ctx.lineWidth = 4;
     ctx.strokeRect(4, 4, 504, 248);
 
-    // Top Header
+    // Top Indicators
     ctx.fillStyle = '#06b6d4';
     ctx.font = 'bold 20px monospace';
     ctx.fillText('● CRUISE AUTO', 24, 38);
@@ -452,8 +572,8 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     ctx.fillText('SPEED', 24, 85);
 
     ctx.fillStyle = '#ffffff';
-    ctx.font = '900 82px monospace';
-    ctx.fillText(`${speed}`, 20, 165);
+    ctx.font = '900 84px monospace';
+    ctx.fillText(`${speed}`, 20, 168);
 
     ctx.fillStyle = '#38bdf8';
     ctx.font = 'bold 24px monospace';
@@ -470,7 +590,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     ctx.font = 'bold 20px monospace';
     ctx.fillText('KM', 445, 140);
 
-    // Bottom Dynamic RPM LED Arc Bar
+    // Dynamic RPM LED Arc Bar
     const rpmPercent = Math.min(1.0, speed / MAX_SPEED_KMH);
     ctx.fillStyle = '#1e293b';
     ctx.fillRect(24, 205, 464, 18);
@@ -486,7 +606,6 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
   const updateGpsScreen = (ctx: CanvasRenderingContext2D, speed: number) => {
     ctx.clearRect(0, 0, 512, 256);
 
-    // Dark Navigation Map Background
     ctx.fillStyle = '#0b0f19';
     ctx.fillRect(0, 0, 512, 256);
 
@@ -515,19 +634,9 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     ctx.strokeStyle = '#e0f2fe';
     ctx.lineWidth = 4;
     ctx.stroke();
-    ctx.shadowBlur = 0; // Reset shadow
+    ctx.shadowBlur = 0;
 
-    // Exit Branch
-    ctx.strokeStyle = '#38bdf8';
-    ctx.lineWidth = 6;
-    ctx.setLineDash([8, 8]);
-    ctx.beginPath();
-    ctx.moveTo(280, 120);
-    ctx.quadraticCurveTo(360, 100, 410, 30);
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    // Glowing Vehicle Blue Location Pin Marker
+    // Glowing Vehicle Blue Location Pin
     ctx.fillStyle = '#0284c7';
     ctx.beginPath();
     ctx.arc(220, 150, 12, 0, Math.PI * 2);
@@ -536,12 +645,6 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     ctx.fillStyle = '#ffffff';
     ctx.beginPath();
     ctx.arc(220, 150, 5, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Destination Pin
-    ctx.fillStyle = '#ef4444';
-    ctx.beginPath();
-    ctx.arc(480, 50, 8, 0, Math.PI * 2);
     ctx.fill();
 
     // Top Navigation Banner Pill
@@ -567,7 +670,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     ctx.fillStyle = '#0f172a';
     ctx.font = '900 16px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('140', 455, 40);
+    ctx.fillText('120', 455, 40);
     ctx.textAlign = 'left';
 
     // Bottom Status Bar
@@ -580,11 +683,11 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
 
     ctx.fillStyle = '#ec4899';
     ctx.font = 'bold 14px sans-serif';
-    ctx.fillText('♫ راديو الغروب: Synthwave', 300, 237);
+    ctx.fillText('♫ Synthwave Beats', 330, 237);
   };
 
   // -------------------------------------------------------------
-  // INITIALIZE THREE.JS SCENE (Dark Mode Twilight Sunset Quality)
+  // INITIALIZE THREE.JS SCENE
   // -------------------------------------------------------------
   useEffect(() => {
     if (!containerRef.current) return;
@@ -592,25 +695,23 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     const width = container.clientWidth || window.innerWidth;
     const height = container.clientHeight || window.innerHeight;
 
-    // 1. Scene & Rich Twilight Sunset Atmosphere
+    // 1. Scene & Sunset Atmosphere
     const scene = new THREE.Scene();
 
-    // Sunset Sky Canvas Gradient Texture (Twilight Indigo to Glowing Sunset Horizon)
     const skyCanvas = document.createElement('canvas');
     skyCanvas.width = 512;
     skyCanvas.height = 512;
     const skyCtx = skyCanvas.getContext('2d');
     if (skyCtx) {
       const grad = skyCtx.createLinearGradient(0, 0, 0, 512);
-      grad.addColorStop(0.0, '#090d16'); // Dark night twilight navy at top
-      grad.addColorStop(0.35, '#1e1b4b'); // Deep indigo
-      grad.addColorStop(0.65, '#581c87'); // Rich violet sunset transition
-      grad.addColorStop(0.85, '#b45309'); // Warm golden amber
-      grad.addColorStop(1.0, '#ea580c'); // Horizon sunset orange
+      grad.addColorStop(0.0, '#090d16');
+      grad.addColorStop(0.35, '#1e1b4b');
+      grad.addColorStop(0.65, '#581c87');
+      grad.addColorStop(0.85, '#b45309');
+      grad.addColorStop(1.0, '#ea580c');
       skyCtx.fillStyle = grad;
       skyCtx.fillRect(0, 0, 512, 512);
 
-      // Subtle evening stars in top sky
       skyCtx.fillStyle = '#ffffff';
       for (let i = 0; i < 40; i++) {
         const sx = Math.random() * 512;
@@ -623,12 +724,10 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     }
     const skyTexture = new THREE.CanvasTexture(skyCanvas);
     scene.background = skyTexture;
-
-    // Atmospheric Dusk Fog
     scene.fog = new THREE.FogExp2(0x581c87, 0.0055);
 
-    // 2. Camera Setup (Wide panoramic view centered naturally with road)
-    const camera = new THREE.PerspectiveCamera(58, width / height, 0.1, 320);
+    // 2. Camera Setup
+    const camera = new THREE.PerspectiveCamera(62, width / height, 0.1, 320);
 
     // 3. Renderer with High Dynamic Range & Sharp Resolution
     const renderer = new THREE.WebGLRenderer({
@@ -636,15 +735,15 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       powerPreference: 'high-performance'
     });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.6));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
+    renderer.toneMappingExposure = 1.08;
     container.appendChild(renderer.domElement);
 
-    // 4. Lighting (Warm Sunset Sun Low on Right Horizon)
-    const sunLight = new THREE.DirectionalLight(0xffa254, 2.4);
+    // 4. Lighting
+    const sunLight = new THREE.DirectionalLight(0xffa254, 2.2);
     sunLight.position.set(60, 20, -90);
     sunLight.castShadow = true;
     sunLight.shadow.mapSize.width = 1024;
@@ -660,13 +759,12 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     const ambientLight = new THREE.AmbientLight(0x4338ca, 0.85);
     scene.add(ambientLight);
 
-    // Glowing Sunset Sun Orb on Horizon
     const sunGlowMat = new THREE.MeshBasicMaterial({ color: 0xffedd5 });
     const sunGlow = new THREE.Mesh(new THREE.CircleGeometry(16, 32), sunGlowMat);
     sunGlow.position.set(70, 22, -260);
     scene.add(sunGlow);
 
-    // 5. Player Vehicle Group & True 3D Cockpit
+    // 5. Player Vehicle Group & 3D Cockpit
     const playerCarGroup = new THREE.Group();
     playerCarGroup.position.set(LANE_POSITIONS[1], 0, 0);
     scene.add(playerCarGroup);
@@ -677,7 +775,8 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       clusterCtx,
       gpsTexture,
       gpsCtx,
-      headlightSpot
+      headlightSpotL,
+      headlightSpotR
     } = buildTrueDriverCockpit(playerCarGroup, camera);
 
     if (clusterCtx) updateClusterScreen(clusterCtx, BASE_CRUISE_SPEED, 0);
@@ -685,14 +784,29 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     clusterTexture.needsUpdate = true;
     gpsTexture.needsUpdate = true;
 
-    // 6. Matte Dark Asphalt Highway (Eliminates white glare)
+    // 6. Vast Ground Terrain (Fills the missing ground void outside the highway)
+    const terrainMat = new THREE.MeshStandardMaterial({
+      color: 0x0f172a, // Dark twilight desert sands
+      roughness: 0.95,
+      metalness: 0.05
+    });
+    const terrainPlane = new THREE.Mesh(
+      new THREE.PlaneGeometry(600, ROAD_SEGMENT_LENGTH),
+      terrainMat
+    );
+    terrainPlane.rotation.x = -Math.PI / 2;
+    terrainPlane.position.set(0, -0.04, -ROAD_SEGMENT_LENGTH / 2 + 20);
+    terrainPlane.receiveShadow = true;
+    scene.add(terrainPlane);
+
+    // 7. Matte Dark Asphalt Highway with Road Shoulders
     const roadMat = new THREE.MeshStandardMaterial({
-      color: 0x11161d,
+      color: 0x11161f,
       roughness: 0.85,
       metalness: 0.05
     });
     const roadPlane = new THREE.Mesh(
-      new THREE.PlaneGeometry(ROAD_TOTAL_WIDTH + 8, ROAD_SEGMENT_LENGTH),
+      new THREE.PlaneGeometry(ROAD_TOTAL_WIDTH + 4, ROAD_SEGMENT_LENGTH),
       roadMat
     );
     roadPlane.rotation.x = -Math.PI / 2;
@@ -705,18 +819,30 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     const guardGeo = new THREE.BoxGeometry(0.45, 0.5, ROAD_SEGMENT_LENGTH);
 
     const guardL = new THREE.Mesh(guardGeo, guardMat);
-    guardL.position.set(-ROAD_TOTAL_WIDTH / 2 - 0.5, 0.25, -ROAD_SEGMENT_LENGTH / 2 + 20);
+    guardL.position.set(-ROAD_TOTAL_WIDTH / 2 - 1.2, 0.25, -ROAD_SEGMENT_LENGTH / 2 + 20);
     guardL.castShadow = true;
     guardL.receiveShadow = true;
     scene.add(guardL);
 
     const guardR = new THREE.Mesh(guardGeo, guardMat);
-    guardR.position.set(ROAD_TOTAL_WIDTH / 2 + 0.5, 0.25, -ROAD_SEGMENT_LENGTH / 2 + 20);
+    guardR.position.set(ROAD_TOTAL_WIDTH / 2 + 1.2, 0.25, -ROAD_SEGMENT_LENGTH / 2 + 20);
     guardR.castShadow = true;
     guardR.receiveShadow = true;
     scene.add(guardR);
 
-    // Crisp Dashed Lane Lines
+    // Solid Edge Lines (خطوط كتف الطريق الصفراء والبيضاء)
+    const edgeLineMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
+    const edgeLineGeo = new THREE.BoxGeometry(0.2, 0.02, ROAD_SEGMENT_LENGTH);
+
+    const edgeLineL = new THREE.Mesh(edgeLineGeo, edgeLineMat);
+    edgeLineL.position.set(-ROAD_TOTAL_WIDTH / 2, 0.015, -ROAD_SEGMENT_LENGTH / 2 + 20);
+    scene.add(edgeLineL);
+
+    const edgeLineR = new THREE.Mesh(edgeLineGeo, edgeLineMat);
+    edgeLineR.position.set(ROAD_TOTAL_WIDTH / 2, 0.015, -ROAD_SEGMENT_LENGTH / 2 + 20);
+    scene.add(edgeLineR);
+
+    // Dashed Lane Lines
     const laneLines: THREE.Mesh[] = [];
     const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
     const lineGeo = new THREE.BoxGeometry(0.18, 0.02, 4.5);
@@ -730,7 +856,21 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       }
     });
 
-    // 7. Scenery Props (Lamp Posts & Low-Poly Trees)
+    // 8. Reflective Cat's Eyes (عيون القطط العاكسة على مسارات الطريق)
+    const catEyes: THREE.Mesh[] = [];
+    const catEyeMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
+    const catEyeGeo = new THREE.BoxGeometry(0.1, 0.03, 0.15);
+
+    [-3.6, 0, 3.6].forEach(cx => {
+      for (let z = -ROAD_SEGMENT_LENGTH + 20; z < 20; z += 6) {
+        const stud = new THREE.Mesh(catEyeGeo, catEyeMat);
+        stud.position.set(cx, 0.025, z);
+        scene.add(stud);
+        catEyes.push(stud);
+      }
+    });
+
+    // 9. Scenery Props (Lamp Posts & Low-Poly Trees)
     const sceneryItems: THREE.Group[] = [];
     const poleMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, metalness: 0.8, roughness: 0.3 });
     const lampHeadMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
@@ -742,27 +882,27 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
 
       // Left Lamp Post
       const lampL = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 7.5, 8), poleMat);
-      lampL.position.set(-ROAD_TOTAL_WIDTH / 2 - 1.8, 3.75, 0);
+      lampL.position.set(-ROAD_TOTAL_WIDTH / 2 - 2.8, 3.75, 0);
       lampL.castShadow = true;
       propGroup.add(lampL);
 
       const armL = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.12, 0.2), poleMat);
-      armL.position.set(-ROAD_TOTAL_WIDTH / 2 - 1.0, 7.4, 0);
+      armL.position.set(-ROAD_TOTAL_WIDTH / 2 - 2.0, 7.4, 0);
       armL.castShadow = true;
       propGroup.add(armL);
 
       const bulbL = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.1, 0.2), lampHeadMat);
-      bulbL.position.set(-ROAD_TOTAL_WIDTH / 2 - 0.3, 7.3, 0);
+      bulbL.position.set(-ROAD_TOTAL_WIDTH / 2 - 1.3, 7.3, 0);
       propGroup.add(bulbL);
 
       // Right Side Low-Poly Tree
       const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.32, 3.2, 8), treeTrunkMat);
-      trunk.position.set(ROAD_TOTAL_WIDTH / 2 + 4.0, 1.6, 0);
+      trunk.position.set(ROAD_TOTAL_WIDTH / 2 + 5.0, 1.6, 0);
       trunk.castShadow = true;
       propGroup.add(trunk);
 
       const leaves = new THREE.Mesh(new THREE.DodecahedronGeometry(1.7, 0), treeLeafMat);
-      leaves.position.set(ROAD_TOTAL_WIDTH / 2 + 4.0, 4.2, 0);
+      leaves.position.set(ROAD_TOTAL_WIDTH / 2 + 5.0, 4.2, 0);
       leaves.castShadow = true;
       propGroup.add(leaves);
 
@@ -771,7 +911,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       sceneryItems.push(propGroup);
     }
 
-    // 8. 3D Traffic Pool
+    // 10. 3D Traffic Pool
     const trafficPool: NPCTrafficCar[] = [];
     const carColors = [0xd97706, 0x2563eb, 0x16a34a, 0xe11d48, 0x0284c7, 0x9333ea];
 
@@ -786,7 +926,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       carGroup.position.set(x, 0, z);
       scene.add(carGroup);
 
-      const speed = 55 + Math.random() * 20;
+      const speed = 48 + Math.random() * 22; // Smooth traffic pace (48-70 km/h)
       trafficPool.push({
         mesh: carGroup,
         wheels,
@@ -811,10 +951,13 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       gpsTexture,
       gpsCtx,
       roadPlane,
+      terrainPlane,
       laneLines,
+      catEyes,
       sceneryItems,
       trafficPool,
-      headlightSpot
+      headlightSpotL,
+      headlightSpotR
     };
 
     const handleResize = () => {
@@ -829,6 +972,8 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      if (synthwaveTimerRef.current) clearInterval(synthwaveTimerRef.current);
+      if (audioContextRef.current) audioContextRef.current.close().catch(() => {});
       renderer.dispose();
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
@@ -838,18 +983,46 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
   }, []);
 
   // -------------------------------------------------------------
+  // MANUAL HEADLIGHT FLASHER / STROBE (تكبيس يدوي كشافات السيارة)
+  // -------------------------------------------------------------
+  const triggerManualHeadlightFlash = useCallback(() => {
+    initAudio();
+    sounds.playHighBeam();
+    const s = gameStateRef.current;
+    const t3 = threeRef.current;
+
+    s.highBeamTimer = 0.45;
+    setIsHighBeaming(true);
+
+    if (t3) {
+      t3.headlightSpotL.intensity = 16;
+      t3.headlightSpotR.intensity = 16;
+
+      // Yield traffic ahead
+      t3.trafficPool.forEach(car => {
+        if (car.z < 0 && car.z > -100) {
+          if (Math.abs(car.x - s.playerX) < LANE_WIDTH * 0.9) {
+            car.targetLane = s.playerX < car.x ? Math.min(3, car.lane + 1) : Math.max(0, car.lane - 1);
+          }
+        }
+      });
+    }
+  }, [initAudio]);
+
+  // -------------------------------------------------------------
   // CONTROLLER COMMAND HANDLER (Responsive & Zero Lag)
   // -------------------------------------------------------------
   const handleControllerCommand = useCallback((cmd: any) => {
     if (!cmd) return;
+    initAudio();
     const s = gameStateRef.current;
 
     if (cmd.type === 'stick_move' && cmd.stick) {
-      s.steerAngle = Math.max(-1, Math.min(1, cmd.stick.x * 1.2));
-      if (cmd.stick.y < -0.2) {
+      s.steerAngle = Math.max(-1, Math.min(1, cmd.stick.x * 1.15));
+      if (cmd.stick.y < -0.22) {
         s.isAccelerating = true;
         s.isBraking = false;
-      } else if (cmd.stick.y > 0.25) {
+      } else if (cmd.stick.y > 0.28) {
         s.isBraking = true;
         s.isAccelerating = false;
       } else {
@@ -861,7 +1034,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       if (cmd.button === 'RIGHT') s.steerAngle = 1;
       if (['UP', 'A', 'X', 'R1', 'R2'].includes(cmd.button)) s.isAccelerating = true;
       if (['DOWN', 'L1', 'L2'].includes(cmd.button)) s.isBraking = true;
-      if (['B', 'Y'].includes(cmd.button)) triggerHighBeamStrobe();
+      if (['B', 'Y'].includes(cmd.button)) triggerManualHeadlightFlash();
       if (cmd.button === 'START') {
         if (s.isGameOver) restartGame();
         else {
@@ -875,7 +1048,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       if (['UP', 'A', 'X', 'R1', 'R2'].includes(cmd.button)) s.isAccelerating = false;
       if (['DOWN', 'L1', 'L2'].includes(cmd.button)) s.isBraking = false;
     }
-  }, [onBackToMenu]);
+  }, [initAudio, onBackToMenu, triggerManualHeadlightFlash]);
 
   useEffect(() => {
     if (controllerCommand) handleControllerCommand(controllerCommand);
@@ -892,11 +1065,12 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
   useEffect(() => {
     const s = gameStateRef.current;
     const handleKeyDown = (e: KeyboardEvent) => {
+      initAudio();
       if (e.key === 'ArrowLeft' || e.key === 'a') s.steerAngle = -1;
       if (e.key === 'ArrowRight' || e.key === 'd') s.steerAngle = 1;
       if (e.key === 'ArrowUp' || e.key === 'w') s.isAccelerating = true;
       if (e.key === 'ArrowDown' || e.key === 's') s.isBraking = true;
-      if (e.key === ' ' || e.key === 'b') triggerHighBeamStrobe();
+      if (e.key === ' ' || e.key === 'b') triggerManualHeadlightFlash();
       if (e.key === 'Escape') onBackToMenu();
     };
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -910,24 +1084,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [onBackToMenu]);
-
-  const triggerHighBeamStrobe = useCallback(() => {
-    const s = gameStateRef.current;
-    s.highBeamTimer = 0.5;
-    setIsHighBeaming(true);
-    sounds.playHighBeam();
-
-    if (threeRef.current) {
-      threeRef.current.trafficPool.forEach(car => {
-        if (car.z < 0 && car.z > -110) {
-          if (Math.abs(car.x - s.playerX) < LANE_WIDTH * 0.9) {
-            car.targetLane = s.playerX < car.x ? Math.min(3, car.lane + 1) : Math.max(0, car.lane - 1);
-          }
-        }
-      });
-    }
-  }, []);
+  }, [initAudio, onBackToMenu, triggerManualHeadlightFlash]);
 
   const restartGame = useCallback(() => {
     const s = gameStateRef.current;
@@ -954,14 +1111,13 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
         car.targetLane = car.lane;
         car.x = LANE_POSITIONS[car.lane];
         car.z = -55 - idx * 44;
-        car.speedKmh = 60 + Math.random() * 15;
+        car.speedKmh = 50 + Math.random() * 18;
         car.targetSpeedKmh = car.speedKmh;
         car.mesh.position.set(car.x, 0, car.z);
       });
     }
   }, []);
 
-  // Safe respawn calculator
   const findSafeRespawn = (pool: NPCTrafficCar[], curIdx: number) => {
     const lanes = [0, 1, 2, 3].sort(() => Math.random() - 0.5);
     for (const lane of lanes) {
@@ -1000,7 +1156,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       const t3 = threeRef.current;
       if (!t3 || s.isPaused || s.isGameOver) return;
 
-      // 1. Natural Highway Speed Dynamics
+      // 1. Natural Highway Speed Dynamics (Smooth, realistic, no FPS spikes)
       if (s.isAccelerating) {
         s.speedKmh = Math.min(MAX_SPEED_KMH, s.speedKmh + ACCEL_RATE * dt);
       } else if (s.isBraking) {
@@ -1013,37 +1169,45 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
         }
       }
 
+      // Update engine audio pitch with speed
+      updateEngineAudio(s.speedKmh);
+
       const worldSpeed = (s.speedKmh / 3.6) * 0.22;
 
       // 2. Smooth Steering Damping & 3D Wheel Rotation
-      s.smoothSteer += (s.steerAngle - s.smoothSteer) * Math.min(1, dt * 9.0);
-      const steerSpeed = 5.2 * (0.8 + s.speedKmh / 160);
+      s.smoothSteer += (s.steerAngle - s.smoothSteer) * Math.min(1, dt * 8.0);
+      const steerSpeed = 4.2 * (0.85 + s.speedKmh / 160);
       s.playerX += s.smoothSteer * steerSpeed * dt;
       s.playerX = Math.max(-ROAD_TOTAL_WIDTH / 2 + 1.2, Math.min(ROAD_TOTAL_WIDTH / 2 - 1.2, s.playerX));
 
       t3.playerCarGroup.position.x = s.playerX;
 
-      // Real 3D Steering Wheel Turning smoothly with driver hands
+      // Rotate 3D Steering Wheel with hands smoothly
       if (t3.steeringWheelGroup) {
         t3.steeringWheelGroup.rotation.z = -s.smoothSteer * 2.2;
       }
 
-      // 3. High Beam Intensity
+      // 3. Headlight Intensity Check
       if (s.highBeamTimer > 0) {
         s.highBeamTimer -= dt;
-        t3.headlightSpot.intensity = 12;
         if (s.highBeamTimer <= 0) {
           setIsHighBeaming(false);
-          t3.headlightSpot.intensity = 5;
+          t3.headlightSpotL.intensity = 6;
+          t3.headlightSpotR.intensity = 6;
         }
       }
 
-      // 4. Seamless Road Markings & Scenery Scrolling
+      // 4. Seamless Road Markings & Cat's Eyes Scrolling
       const moveDistance = worldSpeed * dt * 25;
 
       t3.laneLines.forEach(line => {
         line.position.z += moveDistance;
         if (line.position.z > 20) line.position.z -= ROAD_SEGMENT_LENGTH;
+      });
+
+      t3.catEyes.forEach(stud => {
+        stud.position.z += moveDistance;
+        if (stud.position.z > 20) stud.position.z -= ROAD_SEGMENT_LENGTH;
       });
 
       t3.sceneryItems.forEach(prop => {
@@ -1068,7 +1232,6 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
         }
         car.mesh.position.set(car.x, 0, car.z);
 
-        // Rotate Wheels
         car.wheels.forEach(w => {
           w.rotation.x += trafficWorldSpeed * dt * 4;
         });
@@ -1080,7 +1243,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
           car.targetLane = safe.lane;
           car.x = LANE_POSITIONS[safe.lane];
           car.z = safe.z;
-          car.targetSpeedKmh = 55 + Math.random() * 20;
+          car.targetSpeedKmh = 48 + Math.random() * 22;
           car.speedKmh = car.targetSpeedKmh;
           car.mesh.position.set(car.x, 0, car.z);
         }
@@ -1116,7 +1279,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       s.distanceAccKm += (worldSpeed * dt * 0.08);
       s.scoreAcc += (s.speedKmh / 10) * dt * 15 * s.comboMultiplier;
 
-      // Update In-Car Dynamic Cockpit Screens (Throttled for zero GPU stall)
+      // Update In-Car Dynamic Cockpit Screens & Minimap
       hudTimer += dt;
       if (hudTimer >= 0.1) {
         hudTimer = 0;
@@ -1126,6 +1289,12 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
         setCurrentSpeed(spd);
         setDistanceKm(dist);
         setScore(Math.floor(s.scoreAcc));
+
+        // Update Minimap positions of traffic cars
+        const tPositions = t3.trafficPool
+          .filter(c => c.z < 10 && c.z > -160)
+          .map(c => ({ x: c.x, z: c.z }));
+        setTrafficPositions(tPositions);
 
         if (t3.clusterCtx) {
           updateClusterScreen(t3.clusterCtx, spd, dist);
@@ -1143,48 +1312,117 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
 
     animId = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(animId);
-  }, []);
+  }, [updateEngineAudio]);
+
+  // Motion blur vignette intensity calculation based on speed
+  const motionBlurOpacity = Math.max(0, (currentSpeed - 85) / (MAX_SPEED_KMH - 85)) * 0.35;
 
   return (
     <div className="w-screen h-screen bg-slate-950 text-white select-none overflow-hidden relative font-sans" dir="rtl">
-      {/* 3D WebGL Canvas (Hosts the World, Highway, and Full 3D Luxury Cockpit) */}
+      {/* 3D WebGL Canvas */}
       <div ref={containerRef} className="w-full h-full absolute inset-0 z-0" />
 
-      {/* TOP NOTIFICATIONS & MINIMAL CORNER CONTROLS */}
-      <div className="relative z-20 w-full h-full pointer-events-none flex flex-col justify-between p-8">
-        <div className="w-full flex items-center justify-between">
-          {nearMissAlert && (
-            <div className="px-6 py-2.5 rounded-2xl bg-amber-500 text-slate-950 font-black text-sm shadow-xl shadow-amber-500/40 animate-bounce border border-amber-300">
-              <span>{nearMissAlert}</span>
-            </div>
-          )}
-          {isHighBeaming && (
-            <div className="px-4 py-2 rounded-xl bg-amber-400 text-slate-950 font-black text-xs flex items-center gap-2 shadow-lg shadow-amber-400/50 animate-pulse border border-amber-200">
-              <Lightbulb className="w-4 h-4 fill-current" />
-              <span>تكبيس الإضاءة</span>
-            </div>
-          )}
-        </div>
+      {/* MOTION BLUR / SPEED EDGE VIGNETTE (تأثير ضبابية السرعة على الأطراف) */}
+      <div
+        className="absolute inset-0 pointer-events-none z-10 transition-opacity duration-150"
+        style={{
+          opacity: motionBlurOpacity,
+          background: 'radial-gradient(ellipse at center, transparent 60%, rgba(6, 182, 212, 0.25) 100%)'
+        }}
+      />
 
-        {/* Minimal Unobtrusive Bottom Bar */}
-        <div className="w-full flex items-end justify-between">
-          <div className="pointer-events-auto flex items-center gap-3 bg-slate-900/90 border border-slate-800 rounded-2xl px-4 py-2 text-xs text-slate-300 font-mono backdrop-blur-md">
-            <span>عصا التحكم: توجيه وتسارع</span>
-            <span className="text-slate-600">|</span>
+      {/* TOP NOTIFICATIONS & HUD CONTROLS */}
+      <div className="relative z-20 w-full h-full pointer-events-none flex flex-col justify-between p-6">
+        <div className="w-full flex items-start justify-between">
+          {/* Near miss alert badge */}
+          <div>
+            {nearMissAlert && (
+              <div className="px-6 py-2.5 rounded-2xl bg-amber-500 text-slate-950 font-black text-sm shadow-xl shadow-amber-500/40 animate-bounce border border-amber-300">
+                <span>{nearMissAlert}</span>
+              </div>
+            )}
+            {isHighBeaming && (
+              <div className="mt-2 px-4 py-2 rounded-xl bg-cyan-400 text-slate-950 font-black text-xs flex items-center gap-2 shadow-lg shadow-cyan-400/50 animate-pulse border border-cyan-200">
+                <Lightbulb className="w-4 h-4 fill-current" />
+                <span>تكبيس الكشافات [B / Y]</span>
+              </div>
+            )}
+          </div>
+
+          {/* TOP RIGHT: MODERN HUD MINIMAP (خريطة مصغرة توضح الطريق والمخرج وحركة السيارات) */}
+          <div className="pointer-events-auto flex flex-col items-end gap-2">
+            <div className="w-44 h-44 bg-slate-950/85 border-2 border-cyan-500/50 rounded-3xl p-2.5 shadow-2xl shadow-cyan-950/80 backdrop-blur-md relative overflow-hidden flex flex-col justify-between">
+              {/* Minimap Header */}
+              <div className="flex items-center justify-between text-[10px] font-bold text-cyan-400 border-b border-slate-800 pb-1">
+                <span className="flex items-center gap-1">
+                  <Compass className="w-3 h-3 text-emerald-400" />
+                  <span>طريق الغروب</span>
+                </span>
+                <span className="text-amber-400">120 KM</span>
+              </div>
+
+              {/* Minimap Radar Highway View */}
+              <div className="w-full h-24 relative bg-[#090d16] rounded-xl border border-slate-800/80 overflow-hidden flex items-center justify-center">
+                {/* Highway lanes */}
+                <div className="w-16 h-full border-x border-slate-700 bg-slate-900/60 relative">
+                  <div className="w-px h-full bg-slate-700 border-dashed absolute left-1/3"></div>
+                  <div className="w-px h-full bg-slate-700 border-dashed absolute left-2/3"></div>
+
+                  {/* Upcoming Exit Ramp Curved Branch */}
+                  <div className="absolute right-[-10px] top-3 w-8 h-8 border-t-2 border-r-2 border-cyan-400/80 rounded-tr-full"></div>
+
+                  {/* Player Dot */}
+                  <div
+                    className="w-2.5 h-2.5 bg-cyan-400 rounded-full border border-white shadow-lg shadow-cyan-400 absolute bottom-3 transition-all"
+                    style={{ left: `${((gameStateRef.current.playerX + 5.4) / 10.8) * 80 + 10}%` }}
+                  ></div>
+
+                  {/* Traffic Dots on Minimap */}
+                  {trafficPositions.map((tp, idx) => {
+                    const normY = Math.max(4, Math.min(85, (tp.z / -160) * 80 + 10));
+                    const normX = Math.max(5, Math.min(85, ((tp.x + 5.4) / 10.8) * 80 + 10));
+                    return (
+                      <div
+                        key={idx}
+                        className="w-2 h-2 bg-amber-400 rounded-full absolute shadow-sm shadow-amber-400"
+                        style={{ left: `${normX}%`, top: `${100 - normY}%` }}
+                      ></div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Minimap Footer */}
+              <div className="flex items-center justify-between text-[9px] text-slate-400">
+                <span className="flex items-center gap-1">
+                  <Navigation className="w-2.5 h-2.5 text-cyan-400" />
+                  <span>المخرج بعد 2.4 كم</span>
+                </span>
+                <span className="text-emerald-400 font-bold">{highScore} PTS</span>
+              </div>
+            </div>
+
+            {/* Quick Manual Headlight Strobe Button on UI */}
             <button
               type="button"
-              onClick={onBackToMenu}
-              className="px-3 py-1 rounded-xl bg-rose-600/30 hover:bg-rose-600 text-rose-300 font-bold text-xs border border-rose-500/40 transition-colors"
+              onClick={triggerManualHeadlightFlash}
+              className="px-3.5 py-1.5 rounded-xl bg-slate-900/90 border border-cyan-500/40 text-cyan-300 text-xs font-bold flex items-center gap-1.5 shadow-lg hover:bg-cyan-950 transition-all active:scale-95"
             >
-              الخروج [SELECT]
+              <Lightbulb className="w-3.5 h-3.5 text-amber-400" />
+              <span>تكبيس الكشافات [B / Y]</span>
             </button>
           </div>
+        </div>
 
-          {/* High Score Badge in Corner */}
-          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl px-4 py-2 text-right font-mono">
-            <span className="text-[10px] text-slate-400 block">أعلى سكور</span>
-            <span className="text-sm font-bold text-amber-400">{highScore}</span>
-          </div>
+        {/* Top-Left Tiny Back Button Only (Clean, no floating bottom bar covering controls) */}
+        <div className="w-full flex items-end justify-between pointer-events-none">
+          <button
+            type="button"
+            onClick={onBackToMenu}
+            className="pointer-events-auto px-4 py-2 rounded-xl bg-slate-900/80 hover:bg-rose-600 text-slate-300 hover:text-white font-bold text-xs border border-slate-800 transition-colors backdrop-blur-md"
+          >
+            خروج للقائمة [SELECT]
+          </button>
         </div>
       </div>
 
