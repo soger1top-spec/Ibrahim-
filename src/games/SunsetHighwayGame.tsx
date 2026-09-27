@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
-import { RotateCcw, Lightbulb } from 'lucide-react';
+import { RotateCcw, Lightbulb, Navigation, Music, Compass } from 'lucide-react';
 import { sounds } from './soundFx';
 import { controllerBus } from '../services/controllerBus';
 
@@ -18,11 +18,11 @@ const ROAD_TOTAL_WIDTH = LANE_WIDTH * LANES_COUNT; // 14.4 units
 const LANE_POSITIONS = [-5.4, -1.8, 1.8, 5.4];
 
 const MAX_SPEED_KMH = 150;
-const MIN_SPEED_KMH = 30; // Prevents car from coming to a dead crawl during normal driving
-const BASE_CRUISE_SPEED = 85; // Natural highway cruising speed when no pedal is pressed
+const MIN_SPEED_KMH = 30;
+const BASE_CRUISE_SPEED = 85;
 const ACCEL_RATE = 42;
 const BRAKE_RATE = 95;
-const NATURAL_DECEL_RATE = 20;
+const NATURAL_DECEL_RATE = 18;
 
 const ROAD_SEGMENT_LENGTH = 360;
 const TRAFFIC_COUNT = 6;
@@ -52,6 +52,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
   });
   const [distanceKm, setDistanceKm] = useState(0);
   const [currentSpeed, setCurrentSpeed] = useState(BASE_CRUISE_SPEED);
+  const [wheelSteerVisual, setWheelSteerVisual] = useState(0); // For 60FPS steering wheel rotation
   const [nearMissAlert, setNearMissAlert] = useState<string | null>(null);
   const [isHighBeaming, setIsHighBeaming] = useState(false);
 
@@ -81,13 +82,11 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     camera: THREE.PerspectiveCamera;
     renderer: THREE.WebGLRenderer;
     playerCarGroup: THREE.Group;
-    steeringWheelGroup: THREE.Group;
     roadPlane: THREE.Mesh;
     laneLines: THREE.Mesh[];
     sceneryItems: THREE.Group[];
     trafficPool: NPCTrafficCar[];
     headlightSpot: THREE.SpotLight;
-    sunLight: THREE.DirectionalLight;
   } | null>(null);
 
   // -------------------------------------------------------------
@@ -98,8 +97,8 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
 
     if (isTruck) {
       // White delivery box truck
-      const cabMat = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.4, metalness: 0.3 });
-      const boxMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6, metalness: 0.1 });
+      const cabMat = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.5, metalness: 0.2 });
+      const boxMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.6, metalness: 0.1 });
       const darkMat = new THREE.MeshBasicMaterial({ color: 0x09090b });
 
       // Cab
@@ -130,7 +129,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       group.add(tlR);
     } else {
       // Passenger Sedan Car
-      const bodyMat = new THREE.MeshStandardMaterial({ color: colorHex, roughness: 0.3, metalness: 0.6 });
+      const bodyMat = new THREE.MeshStandardMaterial({ color: colorHex, roughness: 0.4, metalness: 0.4 });
       const glassMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
 
       // Body
@@ -160,7 +159,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     const shadowMat = new THREE.MeshBasicMaterial({
       color: 0x050508,
       transparent: true,
-      opacity: 0.65
+      opacity: 0.75
     });
     const shadow = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 4.6), shadowMat);
     shadow.rotation.x = -Math.PI / 2;
@@ -187,85 +186,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
   };
 
   // -------------------------------------------------------------
-  // BUILD ONLY THE 3D STEERING WHEEL ON THE LEFT (DRIVER SIDE)
-  // -------------------------------------------------------------
-  const buildPlayer3DSteeringWheel = (playerCarGroup: THREE.Group, camera: THREE.PerspectiveCamera) => {
-    // 1. Move camera slightly back for realistic driver eye perspective
-    // Position: Left side (x: -0.45), comfortable height (y: 1.08), pulled back (z: 0.22)
-    camera.position.set(-0.45, 1.08, 0.22);
-    camera.rotation.set(-0.02, 0, 0); // Slight downward glance towards the highway
-    camera.up.set(0, 1, 0);
-    playerCarGroup.add(camera);
-
-    // 2. High-Fidelity 3D Steering Wheel Group (Shifted to Left Side directly in front of driver)
-    const steeringWheelGroup = new THREE.Group();
-    steeringWheelGroup.position.set(-0.45, 0.72, -0.40);
-    steeringWheelGroup.rotation.x = -0.26; // Ergonomic tilt towards driver
-
-    // Leather Outer Rim
-    const wheelRimGeo = new THREE.TorusGeometry(0.20, 0.028, 16, 32);
-    const wheelRimMat = new THREE.MeshStandardMaterial({
-      color: 0x18181b,
-      roughness: 0.6,
-      metalness: 0.2
-    });
-    const wheelRimMesh = new THREE.Mesh(wheelRimGeo, wheelRimMat);
-    wheelRimMesh.castShadow = true;
-    steeringWheelGroup.add(wheelRimMesh);
-
-    // Inner Polished Chrome Ring
-    const chromeMat = new THREE.MeshStandardMaterial({ color: 0xe4e4e7, metalness: 0.9, roughness: 0.1 });
-    const chromeRing = new THREE.Mesh(new THREE.TorusGeometry(0.155, 0.007, 10, 28), chromeMat);
-    steeringWheelGroup.add(chromeRing);
-
-    // Center Hub Cap
-    const hubMat = new THREE.MeshStandardMaterial({ color: 0x27272a, roughness: 0.4, metalness: 0.5 });
-    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.026, 24), hubMat);
-    hub.rotation.x = Math.PI / 2;
-    hub.castShadow = true;
-    steeringWheelGroup.add(hub);
-
-    // 3 Brushed Metal Spokes
-    const spokeMat = new THREE.MeshStandardMaterial({ color: 0x71717a, metalness: 0.85, roughness: 0.2 });
-
-    const spokeBottom = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.14, 0.012), spokeMat);
-    spokeBottom.position.set(0, -0.075, 0);
-    steeringWheelGroup.add(spokeBottom);
-
-    const spokeLeft = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.14, 0.012), spokeMat);
-    spokeLeft.position.set(-0.075, 0.02, 0);
-    spokeLeft.rotation.z = Math.PI / 3;
-    steeringWheelGroup.add(spokeLeft);
-
-    const spokeRight = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.14, 0.012), spokeMat);
-    spokeRight.position.set(0.075, 0.02, 0);
-    spokeRight.rotation.z = -Math.PI / 3;
-    steeringWheelGroup.add(spokeRight);
-
-    // Paddle Shifters
-    const paddleGeo = new THREE.BoxGeometry(0.02, 0.08, 0.01);
-    const paddleL = new THREE.Mesh(paddleGeo, chromeMat);
-    paddleL.position.set(-0.15, 0.02, -0.02);
-    steeringWheelGroup.add(paddleL);
-
-    const paddleR = new THREE.Mesh(paddleGeo, chromeMat);
-    paddleR.position.set(0.15, 0.02, -0.02);
-    steeringWheelGroup.add(paddleR);
-
-    playerCarGroup.add(steeringWheelGroup);
-
-    // 3. Headlight Spotlight
-    const headlightSpot = new THREE.SpotLight(0xfff5ea, 5, 130, Math.PI / 4, 0.5, 1);
-    headlightSpot.position.set(0, 0.4, -1.0);
-    headlightSpot.target.position.set(0, 0, -45);
-    playerCarGroup.add(headlightSpot);
-    playerCarGroup.add(headlightSpot.target);
-
-    return { steeringWheelGroup, headlightSpot };
-  };
-
-  // -------------------------------------------------------------
-  // INITIALIZE THREE.JS SCENE (Enhanced Quality & Deep Sunset Shadows)
+  // INITIALIZE THREE.JS SCENE (Dark Mode Twilight Sunset Quality)
   // -------------------------------------------------------------
   useEffect(() => {
     if (!containerRef.current) return;
@@ -273,63 +194,101 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     const width = container.clientWidth || window.innerWidth;
     const height = container.clientHeight || window.innerHeight;
 
-    // 1. Scene & Sunset Sky Fog
+    // 1. Scene & Rich Twilight Sunset Atmosphere (Fixes flat yellow sky)
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xf59e0b); // Rich warm sunset orange
-    scene.fog = new THREE.FogExp2(0xf59e0b, 0.0065);
 
-    // 2. Camera Setup (Wide panoramic view)
-    const camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 300);
+    // Create a beautiful Sunset Sky Canvas Gradient Texture (Twilight Blue to Fiery Sunset Orange)
+    const skyCanvas = document.createElement('canvas');
+    skyCanvas.width = 512;
+    skyCanvas.height = 512;
+    const skyCtx = skyCanvas.getContext('2d');
+    if (skyCtx) {
+      const grad = skyCtx.createLinearGradient(0, 0, 0, 512);
+      grad.addColorStop(0.0, '#090d16'); // Dark night twilight navy at top
+      grad.addColorStop(0.35, '#1e1b4b'); // Deep indigo
+      grad.addColorStop(0.65, '#581c87'); // Rich violet sunset transition
+      grad.addColorStop(0.85, '#b45309'); // Warm golden amber
+      grad.addColorStop(1.0, '#f97316'); // Horizon sunset orange
+      skyCtx.fillStyle = grad;
+      skyCtx.fillRect(0, 0, 512, 512);
 
-    // 3. Renderer with Optimized Sharpness & Shadows
+      // Subtle evening stars in top sky
+      skyCtx.fillStyle = '#ffffff';
+      for (let i = 0; i < 40; i++) {
+        const sx = Math.random() * 512;
+        const sy = Math.random() * 200;
+        const sr = Math.random() * 1.5;
+        skyCtx.beginPath();
+        skyCtx.arc(sx, sy, sr, 0, Math.PI * 2);
+        skyCtx.fill();
+      }
+    }
+    const skyTexture = new THREE.CanvasTexture(skyCanvas);
+    scene.background = skyTexture;
+
+    // Atmospheric Dusk Fog (Smooth gradient fade into evening horizon)
+    scene.fog = new THREE.FogExp2(0x581c87, 0.0055);
+
+    // 2. Camera Setup (Wide panoramic view centered naturally with road)
+    const camera = new THREE.PerspectiveCamera(58, width / height, 0.1, 320);
+    camera.position.set(-0.35, 1.15, 0.2);
+    camera.rotation.set(-0.03, 0, 0);
+
+    // 3. Renderer with High Dynamic Range & Sharp Resolution
     const renderer = new THREE.WebGLRenderer({
       antialias: true,
       powerPreference: 'high-performance'
     });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.6));
     renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Clean soft shadows
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.15;
+    renderer.toneMappingExposure = 1.05; // Balanced, non-blown-out exposure
     container.appendChild(renderer.domElement);
 
-    // 4. Lighting (Strong Sunset Sun on Right Horizon Casting Long Shadows)
-    const sunLight = new THREE.DirectionalLight(0xffb366, 3.6);
-    sunLight.position.set(55, 18, -85);
+    // 4. Lighting (Warm Sunset Sun Low on Right Horizon Casting Dramatic Shadows)
+    const sunLight = new THREE.DirectionalLight(0xffa254, 2.4); // Calibrated warmth without white glare
+    sunLight.position.set(60, 20, -90);
     sunLight.castShadow = true;
     sunLight.shadow.mapSize.width = 1024;
     sunLight.shadow.mapSize.height = 1024;
     sunLight.shadow.camera.near = 1;
-    sunLight.shadow.camera.far = 240;
+    sunLight.shadow.camera.far = 250;
     sunLight.shadow.camera.left = -30;
     sunLight.shadow.camera.right = 30;
     sunLight.shadow.camera.top = 25;
     sunLight.shadow.camera.bottom = -25;
     scene.add(sunLight);
 
-    const ambientLight = new THREE.AmbientLight(0x6366f1, 0.7); // Deep contrast purple-blue ambient shadow fill
+    // Deep purple-indigo ambient light for Dark Mode contrast
+    const ambientLight = new THREE.AmbientLight(0x4338ca, 0.85);
     scene.add(ambientLight);
 
-    // Sun Disc on Horizon
-    const sunDiscMat = new THREE.MeshBasicMaterial({ color: 0xffedd5 });
-    const sunDisc = new THREE.Mesh(new THREE.CircleGeometry(18, 24), sunDiscMat);
-    sunDisc.position.set(70, 22, -240);
-    scene.add(sunDisc);
+    // Glowing Sunset Sun Orb on Horizon
+    const sunGlowMat = new THREE.MeshBasicMaterial({ color: 0xffedd5 });
+    const sunGlow = new THREE.Mesh(new THREE.CircleGeometry(16, 32), sunGlowMat);
+    sunGlow.position.set(70, 22, -260);
+    scene.add(sunGlow);
 
     // 5. Player Vehicle Group
     const playerCarGroup = new THREE.Group();
     playerCarGroup.position.set(LANE_POSITIONS[1], 0, 0);
+    playerCarGroup.add(camera);
     scene.add(playerCarGroup);
 
-    // Attach Only the 3D Steering Wheel (No heavy 3D cockpit meshes)
-    const { steeringWheelGroup, headlightSpot } = buildPlayer3DSteeringWheel(playerCarGroup, camera);
+    // Headlight Spotlight
+    const headlightSpot = new THREE.SpotLight(0xfff5ea, 5, 130, Math.PI / 4, 0.5, 1);
+    headlightSpot.position.set(0, 0.4, -1.0);
+    headlightSpot.target.position.set(0, 0, -45);
+    playerCarGroup.add(headlightSpot);
+    playerCarGroup.add(headlightSpot.target);
 
-    // 6. Asphalt Highway Road
+    // 6. Matte Dark Asphalt Highway (Eliminates blinding white glare)
     const roadMat = new THREE.MeshStandardMaterial({
-      color: 0x1e242d,
-      roughness: 0.6,
-      metalness: 0.2
+      color: 0x11161d, // Dark asphalt
+      roughness: 0.85, // Matte surface, no plastic-like glare
+      metalness: 0.05
     });
     const roadPlane = new THREE.Mesh(
       new THREE.PlaneGeometry(ROAD_TOTAL_WIDTH + 8, ROAD_SEGMENT_LENGTH),
@@ -341,7 +300,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     scene.add(roadPlane);
 
     // Guardrails Left and Right
-    const guardMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.3, metalness: 0.7 });
+    const guardMat = new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.4, metalness: 0.6 });
     const guardGeo = new THREE.BoxGeometry(0.45, 0.5, ROAD_SEGMENT_LENGTH);
 
     const guardL = new THREE.Mesh(guardGeo, guardMat);
@@ -356,10 +315,10 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     guardR.receiveShadow = true;
     scene.add(guardR);
 
-    // Dashed Lane Lines
+    // Crisp Dashed Lane Lines
     const laneLines: THREE.Mesh[] = [];
     const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    const lineGeo = new THREE.BoxGeometry(0.18, 0.02, 4.2);
+    const lineGeo = new THREE.BoxGeometry(0.18, 0.02, 4.5);
 
     [-3.6, 0, 3.6].forEach(lx => {
       for (let z = -ROAD_SEGMENT_LENGTH + 20; z < 20; z += 9) {
@@ -370,12 +329,12 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       }
     });
 
-    // 7. Scenery Props (Lamp Posts with Shadows & Low-Poly Trees)
+    // 7. Scenery Props (Lamp Posts & Low-Poly Trees)
     const sceneryItems: THREE.Group[] = [];
-    const poleMat = new THREE.MeshStandardMaterial({ color: 0x334155, metalness: 0.8, roughness: 0.3 });
+    const poleMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, metalness: 0.8, roughness: 0.3 });
     const lampHeadMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
-    const treeTrunkMat = new THREE.MeshStandardMaterial({ color: 0x451a03, roughness: 0.9 });
-    const treeLeafMat = new THREE.MeshStandardMaterial({ color: 0x166534, roughness: 0.7 });
+    const treeTrunkMat = new THREE.MeshStandardMaterial({ color: 0x27170a, roughness: 0.9 });
+    const treeLeafMat = new THREE.MeshStandardMaterial({ color: 0x14532d, roughness: 0.7 });
 
     for (let z = -ROAD_SEGMENT_LENGTH + 20; z < 20; z += 30) {
       const propGroup = new THREE.Group();
@@ -426,7 +385,6 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       carGroup.position.set(x, 0, z);
       scene.add(carGroup);
 
-      // Traffic travels at a steady 55 - 75 km/h so player cruises past naturally
       const speed = 55 + Math.random() * 20;
       trafficPool.push({
         mesh: carGroup,
@@ -446,13 +404,11 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       camera,
       renderer,
       playerCarGroup,
-      steeringWheelGroup,
       roadPlane,
       laneLines,
       sceneryItems,
       trafficPool,
-      headlightSpot,
-      sunLight
+      headlightSpot
     };
 
     const handleResize = () => {
@@ -484,7 +440,6 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
 
     if (cmd.type === 'stick_move' && cmd.stick) {
       s.steerAngle = Math.max(-1, Math.min(1, cmd.stick.x * 1.2));
-      // Only accelerate if stick pushed forward, brake if pulled backward
       if (cmd.stick.y < -0.2) {
         s.isAccelerating = true;
         s.isBraking = false;
@@ -641,13 +596,10 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
 
       // 1. Natural Highway Speed Dynamics
       if (s.isAccelerating) {
-        // Accelerate up to MAX_SPEED
         s.speedKmh = Math.min(MAX_SPEED_KMH, s.speedKmh + ACCEL_RATE * dt);
       } else if (s.isBraking) {
-        // Brake down to MIN_SPEED
         s.speedKmh = Math.max(MIN_SPEED_KMH, s.speedKmh - BRAKE_RATE * dt);
       } else {
-        // Natural Highway Cruising (Gently returns towards BASE_CRUISE_SPEED instead of stalling at 20km/h!)
         if (s.speedKmh > BASE_CRUISE_SPEED) {
           s.speedKmh = Math.max(BASE_CRUISE_SPEED, s.speedKmh - NATURAL_DECEL_RATE * dt);
         } else if (s.speedKmh < BASE_CRUISE_SPEED) {
@@ -658,17 +610,12 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       const worldSpeed = (s.speedKmh / 3.6) * 0.22;
 
       // 2. Smooth Steering Damping
-      s.smoothSteer += (s.steerAngle - s.smoothSteer) * Math.min(1, dt * 8.0);
+      s.smoothSteer += (s.steerAngle - s.smoothSteer) * Math.min(1, dt * 9.0);
       const steerSpeed = 5.2 * (0.8 + s.speedKmh / 160);
       s.playerX += s.smoothSteer * steerSpeed * dt;
       s.playerX = Math.max(-ROAD_TOTAL_WIDTH / 2 + 1.2, Math.min(ROAD_TOTAL_WIDTH / 2 - 1.2, s.playerX));
 
       t3.playerCarGroup.position.x = s.playerX;
-
-      // Rotate Steering Wheel on Left Driver Side smoothly
-      if (t3.steeringWheelGroup) {
-        t3.steeringWheelGroup.rotation.z = -s.smoothSteer * 2.2;
-      }
 
       // 3. High Beam Intensity
       if (s.highBeamTimer > 0) {
@@ -758,6 +705,9 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       s.distanceAccKm += (worldSpeed * dt * 0.08);
       s.scoreAcc += (s.speedKmh / 10) * dt * 15 * s.comboMultiplier;
 
+      // Update Steering Wheel Visual Angle (60FPS smooth)
+      setWheelSteerVisual(s.smoothSteer * -75);
+
       // Throttle React State Updates
       hudTimer += dt;
       if (hudTimer >= 0.12) {
@@ -780,151 +730,362 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       {/* 3D WebGL Canvas */}
       <div ref={containerRef} className="w-full h-full absolute inset-0 z-0" />
 
-      {/* 2D / 2.5D SLEEK VEHICLE INTERIOR OVERLAY (Zero GPU overhead, ultra-sharp on 4K TV) */}
+      {/* ============================================================== */}
+      {/* 2D / 2.5D LUXURY COCKPIT INTERIOR OVERLAY (Mercedes AMG / Porsche Style) */}
+      {/* ============================================================== */}
       <svg
         className="w-full h-full absolute inset-0 z-10 pointer-events-none"
         viewBox="0 0 1920 1080"
         preserveAspectRatio="none"
       >
         <defs>
-          {/* Dashboard dark leather gradient */}
-          <linearGradient id="dashLeather" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#1e222b" />
-            <stop offset="35%" stopColor="#13161c" />
-            <stop offset="100%" stopColor="#090a0d" />
+          {/* Carbon Leather Dashboard Gradient */}
+          <linearGradient id="luxuryDashGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#141824" />
+            <stop offset="30%" stopColor="#0d111a" />
+            <stop offset="100%" stopColor="#05070a" />
           </linearGradient>
 
-          {/* Instrument cluster hood gradient */}
-          <linearGradient id="hoodGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#2a303c" />
-            <stop offset="100%" stopColor="#111317" />
+          {/* Ambient LED Glow Strip (Cyan/Violet) */}
+          <linearGradient id="ambientLedGrad" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor="#06b6d4" />
+            <stop offset="35%" stopColor="#3b82f6" />
+            <stop offset="70%" stopColor="#8b5cf6" />
+            <stop offset="100%" stopColor="#ec4899" />
           </linearGradient>
 
-          {/* Metallic bonnet hood glow */}
-          <linearGradient id="bonnetPaint" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#52525b" />
-            <stop offset="50%" stopColor="#3f3f46" />
-            <stop offset="100%" stopColor="#27272a" />
+          {/* Metallic Bonnet Hood Reflection */}
+          <linearGradient id="bonnetGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#374151" />
+            <stop offset="45%" stopColor="#1f2937" />
+            <stop offset="100%" stopColor="#111827" />
           </linearGradient>
 
-          {/* Windshield frame pillars */}
+          {/* A-Pillar Trim */}
           <linearGradient id="pillarGrad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#090a0d" />
-            <stop offset="100%" stopColor="#181a20" />
+            <stop offset="0%" stopColor="#05070a" />
+            <stop offset="100%" stopColor="#1e2433" />
           </linearGradient>
 
-          {/* Rearview mirror glass */}
-          <linearGradient id="mirrorGlass" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor="#272a34" />
-            <stop offset="100%" stopColor="#0f1115" />
+          {/* Rearview Mirror Glass with Sunset Sky Horizon Reflection */}
+          <linearGradient id="rearviewGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#1e1b4b" />
+            <stop offset="60%" stopColor="#701a75" />
+            <stop offset="100%" stopColor="#ea580c" />
           </linearGradient>
         </defs>
 
-        {/* Top Windshield Roof Trim */}
-        <path d="M0,0 L1920,0 L1920,65 C1200,85 720,85 0,65 Z" fill="url(#dashLeather)" />
+        {/* Top Windshield Roof Trim with Sun-Visor Outline */}
+        <path d="M0,0 L1920,0 L1920,55 C1200,80 720,80 0,55 Z" fill="#090d16" />
 
-        {/* Left A-Pillar (Driver Side Windshield Frame) */}
-        <path d="M0,0 L260,0 L70,720 L0,780 Z" fill="url(#pillarGrad)" />
+        {/* Left A-Pillar (Driver Side Windshield Pillar) */}
+        <path d="M0,0 L240,0 L50,750 L0,800 Z" fill="url(#pillarGrad)" />
 
-        {/* Hanging Center-Right Rearview Mirror */}
-        <g transform="translate(1180, 75)">
-          <line x1="120" y1="-20" x2="120" y2="15" stroke="#090a0d" strokeWidth="10" />
-          <rect x="0" y="15" width="240" height="72" rx="12" fill="#090a0d" stroke="#272a34" strokeWidth="3" />
-          <rect x="8" y="22" width="224" height="58" rx="8" fill="url(#mirrorGlass)" opacity="0.9" />
-          {/* Subtle reflection line */}
-          <line x1="20" y1="35" x2="200" y2="65" stroke="#f59e0b" strokeWidth="2" opacity="0.4" />
+        {/* Hanging Rearview Mirror (Center-Right) with Horizon Sky Reflection */}
+        <g transform="translate(1140, 65)">
+          <line x1="130" y1="-20" x2="130" y2="15" stroke="#05070a" strokeWidth="10" />
+          <rect x="0" y="15" width="260" height="76" rx="14" fill="#05070a" stroke="#334155" strokeWidth="3" />
+          <rect x="8" y="22" width="244" height="62" rx="10" fill="url(#rearviewGrad)" opacity="0.85" />
+          {/* Subtle reflection car silhouette in mirror */}
+          <path d="M110,65 L150,65 L145,55 L115,55 Z" fill="#020617" opacity="0.6" />
         </g>
 
-        {/* Smooth Metallic Car Bonnet Extending Forward */}
-        {/* Begins naturally at base of windshield and slopes forward */}
+        {/* Metallic Sloped Bonnet Hood extending out front */}
         <path
-          d="M70,720 L680,695 L1240,695 L1850,720 L1920,820 L0,820 Z"
-          fill="url(#bonnetPaint)"
-          opacity="0.95"
+          d="M50,750 L640,730 L1280,730 L1880,750 L1920,830 L0,830 Z"
+          fill="url(#bonnetGrad)"
         />
-        {/* Bonnet aerodynamic center crease */}
-        <polygon points="955,695 965,695 970,820 950,820" fill="#71717a" opacity="0.4" />
+        {/* Subtle center hood crease */}
+        <polygon points="958,730 962,730 965,830 955,830" fill="#4b5563" opacity="0.3" />
 
-        {/* Main Dashboard Body across bottom */}
+        {/* Main Luxury Dashboard Base Across Bottom */}
         <path
-          d="M0,770 Q960,740 1920,770 L1920,1080 L0,1080 Z"
-          fill="url(#dashLeather)"
+          d="M0,810 Q960,780 1920,810 L1920,1080 L0,1080 Z"
+          fill="url(#luxuryDashGrad)"
         />
 
-        {/* Driver Instrument Cluster Hood (Elevated specifically on the left side) */}
+        {/* Continuous Ambient Neon LED Light Strip along Dashboard Edge */}
         <path
-          d="M260,780 C320,690 620,690 680,780 Z"
-          fill="url(#hoodGrad)"
-          stroke="#3f3f46"
+          d="M0,810 Q960,780 1920,810"
+          fill="none"
+          stroke="url(#ambientLedGrad)"
+          strokeWidth="4"
+          filter="drop-shadow(0 0 8px rgba(6, 182, 212, 0.8))"
+        />
+
+        {/* Driver Cluster Curved Cowl on Left */}
+        <path
+          d="M140,820 C220,740 640,740 720,820 Z"
+          fill="#0a0e17"
+          stroke="#1e293b"
           strokeWidth="3"
         />
 
-        {/* Air Vent Accents (Center and Right) */}
-        <rect x="980" y="790" width="130" height="35" rx="6" fill="#090a0d" stroke="#272a34" strokeWidth="2" />
-        <line x1="990" y1="802" x2="1100" y2="802" stroke="#272a34" strokeWidth="2" />
-        <line x1="990" y1="812" x2="1100" y2="812" stroke="#272a34" strokeWidth="2" />
-
-        <rect x="1140" y="790" width="130" height="35" rx="6" fill="#090a0d" stroke="#272a34" strokeWidth="2" />
-        <line x1="1150" y1="802" x2="1260" y2="802" stroke="#272a34" strokeWidth="2" />
-        <line x1="1150" y1="812" x2="1260" y2="812" stroke="#272a34" strokeWidth="2" />
+        {/* Center Console Air Conditioning Vents (Brushed Metal) */}
+        <g transform="translate(1000, 805)">
+          <rect x="0" y="0" width="130" height="32" rx="6" fill="#05070a" stroke="#334155" strokeWidth="2" />
+          <line x1="10" y1="11" x2="120" y2="11" stroke="#475569" strokeWidth="2" />
+          <line x1="10" y1="21" x2="120" y2="21" stroke="#475569" strokeWidth="2" />
+        </g>
+        <g transform="translate(1150, 805)">
+          <rect x="0" y="0" width="130" height="32" rx="6" fill="#05070a" stroke="#334155" strokeWidth="2" />
+          <line x1="10" y1="11" x2="120" y2="11" stroke="#475569" strokeWidth="2" />
+          <line x1="10" y1="21" x2="120" y2="21" stroke="#475569" strokeWidth="2" />
+        </g>
       </svg>
 
-      {/* DRIVER DIGITAL GAUGE CLUSTER SCREEN (Built directly INSIDE the dashboard on the LEFT side) */}
+      {/* ============================================================== */}
+      {/* DRIVER DIGITAL GAUGE CLUSTER (Integrated Behind Steering Wheel on Left) */}
+      {/* ============================================================== */}
       <div
         className="absolute z-20 pointer-events-none font-mono"
         style={{
-          left: '16.5%',
-          bottom: '12%',
-          width: '320px',
-          height: '110px'
+          left: '9%',
+          bottom: '8.5%',
+          width: '380px',
+          height: '130px'
         }}
       >
-        <div className="w-full h-full bg-slate-950/95 border-2 border-cyan-500/50 rounded-2xl p-3 shadow-xl shadow-cyan-950/60 backdrop-blur-md flex flex-col justify-between">
-          {/* Top Status Indicators inside car screen */}
-          <div className="flex items-center justify-between text-[11px] text-cyan-400 font-bold border-b border-cyan-900/60 pb-1">
-            <span className="flex items-center gap-1">
+        <div className="w-full h-full bg-slate-950/90 border-2 border-cyan-500/40 rounded-3xl p-3 shadow-2xl shadow-cyan-950/80 backdrop-blur-md flex flex-col justify-between">
+          {/* Top Status */}
+          <div className="flex items-center justify-between text-[11px] text-cyan-400 font-bold border-b border-slate-800 pb-1">
+            <span className="flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span>CRUISE AUTO</span>
+              <span>CRUISE ACTIVE</span>
             </span>
-            <span className="text-amber-400">HIGHWAY 4-LANE</span>
+            <span className="px-2 py-0.5 rounded-md bg-cyan-950/80 border border-cyan-500/30 text-cyan-300 text-[10px]">
+              SPORT [D7]
+            </span>
           </div>
 
           {/* Speed & Distance Main Display */}
-          <div className="flex items-center justify-between px-1">
+          <div className="flex items-center justify-between px-2 py-1">
             <div className="flex flex-col">
-              <span className="text-[10px] text-slate-400 font-bold">SPEED</span>
+              <span className="text-[10px] text-slate-400 font-bold tracking-wider">SPEED</span>
               <div className="flex items-baseline gap-1">
-                <span className="text-3xl font-black text-white tracking-tight drop-shadow-md">
+                <span className="text-4xl font-black text-white tracking-tighter drop-shadow-md">
                   {currentSpeed}
                 </span>
-                <span className="text-[11px] font-bold text-cyan-300">KM/H</span>
+                <span className="text-xs font-bold text-cyan-400">KM/H</span>
               </div>
             </div>
 
-            <div className="h-8 w-px bg-slate-800"></div>
+            <div className="h-10 w-px bg-slate-800"></div>
 
             <div className="flex flex-col items-end">
-              <span className="text-[10px] text-slate-400 font-bold">TRIP ODO</span>
+              <span className="text-[10px] text-slate-400 font-bold tracking-wider">TRIP ODO</span>
               <div className="flex items-baseline gap-1">
-                <span className="text-xl font-bold text-emerald-400">
+                <span className="text-2xl font-bold text-emerald-400">
                   {distanceKm}
                 </span>
-                <span className="text-[11px] font-bold text-slate-400">KM</span>
+                <span className="text-xs font-bold text-slate-400">KM</span>
               </div>
             </div>
           </div>
 
-          {/* Bottom RPM / Combo LED Gauge */}
-          <div className="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden flex">
+          {/* RPM LED Arc Bar */}
+          <div className="w-full bg-slate-900 rounded-full h-2 overflow-hidden flex">
             <div
-              className="bg-gradient-to-r from-cyan-400 via-emerald-400 to-amber-400 h-full transition-all duration-100"
+              className="bg-gradient-to-r from-cyan-400 via-emerald-400 to-amber-400 h-full transition-all duration-75"
               style={{ width: `${Math.min(100, (currentSpeed / MAX_SPEED_KMH) * 100)}%` }}
             ></div>
           </div>
         </div>
       </div>
 
+      {/* ============================================================== */}
+      {/* CENTER WIDESCREEN INFOTAINMENT DISPLAY (Google Maps GPS Navigation) */}
+      {/* ============================================================== */}
+      <div
+        className="absolute z-20 pointer-events-none font-sans"
+        style={{
+          left: '46%',
+          bottom: '3%',
+          width: '520px',
+          height: '190px'
+        }}
+      >
+        <div className="w-full h-full bg-slate-950/95 border-2 border-slate-700/80 rounded-3xl p-3 shadow-2xl shadow-black/90 backdrop-blur-xl flex flex-col justify-between overflow-hidden relative">
+          {/* Subtle Screen Bezel Glow */}
+          <div className="absolute inset-0 bg-gradient-to-b from-cyan-500/5 to-transparent pointer-events-none"></div>
+
+          {/* GPS Header: Navigation Route Banner */}
+          <div className="flex items-center justify-between z-10 bg-slate-900/90 border border-slate-800 rounded-xl px-3 py-1.5 text-xs">
+            <div className="flex items-center gap-2 text-cyan-400 font-bold">
+              <Navigation className="w-4 h-4 fill-cyan-400" />
+              <span>بعد 2.4 كم: مخرج طريق الساحل</span>
+            </div>
+            <div className="flex items-center gap-2 text-slate-400 text-[11px] font-mono">
+              <Compass className="w-3.5 h-3.5 text-emerald-400" />
+              <span>شمال غرب • ETA 18:45</span>
+            </div>
+          </div>
+
+          {/* Google Maps Stylized Dark Navigation Viewport */}
+          <div className="w-full h-[85px] bg-[#0c121e] rounded-xl relative overflow-hidden border border-slate-800/80 flex items-center justify-center">
+            {/* Dark City Grid Lines */}
+            <svg className="absolute inset-0 w-full h-full opacity-30" viewBox="0 0 500 90">
+              <line x1="0" y1="30" x2="500" y2="30" stroke="#334155" strokeWidth="1" strokeDasharray="6 6" />
+              <line x1="0" y1="65" x2="500" y2="65" stroke="#334155" strokeWidth="1" strokeDasharray="6 6" />
+              <line x1="80" y1="0" x2="80" y2="90" stroke="#334155" strokeWidth="1" />
+              <line x1="220" y1="0" x2="220" y2="90" stroke="#334155" strokeWidth="1" />
+              <line x1="380" y1="0" x2="380" y2="90" stroke="#334155" strokeWidth="1" />
+
+              {/* Glowing Highway Route Path (Google Maps Style) */}
+              <path
+                d="M 20,70 Q 180,60 250,45 T 480,20"
+                fill="none"
+                stroke="#06b6d4"
+                strokeWidth="6"
+                strokeLinecap="round"
+                filter="drop-shadow(0 0 6px rgba(6, 182, 212, 0.9))"
+              />
+              <path
+                d="M 20,70 Q 180,60 250,45 T 480,20"
+                fill="none"
+                stroke="#67e8f9"
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+
+              {/* Exit Ramp Path Branch */}
+              <path
+                d="M 250,45 Q 310,35 340,10"
+                fill="none"
+                stroke="#38bdf8"
+                strokeWidth="3"
+                strokeDasharray="4 4"
+                opacity="0.8"
+              />
+
+              {/* Destination Pin Marker */}
+              <circle cx="480" cy="20" r="5" fill="#ef4444" stroke="#ffffff" strokeWidth="1.5" />
+            </svg>
+
+            {/* Glowing Blue Vehicle Location Arrow (Google Maps Style) */}
+            <div className="absolute left-[38%] top-[40%] flex items-center justify-center">
+              <div className="w-5 h-5 rounded-full bg-cyan-500/20 animate-ping absolute"></div>
+              <div className="w-4 h-4 bg-cyan-400 rounded-full border-2 border-white shadow-lg shadow-cyan-400 flex items-center justify-center">
+                <div className="w-1.5 h-1.5 bg-slate-950 rounded-full"></div>
+              </div>
+            </div>
+
+            {/* Floating Street Badge & Speed Limit Pill */}
+            <div className="absolute right-3 bottom-2 bg-slate-900/90 border border-slate-700 rounded-lg px-2.5 py-0.5 text-[11px] font-bold text-slate-200">
+              طريق الغروب السريع • 140 كم/س
+            </div>
+
+            <div className="absolute left-3 bottom-2 flex items-center gap-1.5">
+              <div className="w-6 h-6 rounded-full bg-white border-2 border-rose-600 flex items-center justify-center text-[10px] font-black text-slate-950 font-mono">
+                140
+              </div>
+            </div>
+          </div>
+
+          {/* Bottom Infotainment Bar: Synthwave Music Widget */}
+          <div className="flex items-center justify-between text-xs px-2 pt-1 text-slate-400 border-t border-slate-800/80">
+            <div className="flex items-center gap-2">
+              <Music className="w-3.5 h-3.5 text-pink-400" />
+              <span className="text-[11px] text-slate-300 font-medium">راديو الغروب: Synthwave FM</span>
+            </div>
+            {/* Animated Equalizer Wave Bars */}
+            <div className="flex items-end gap-1 h-3">
+              <div className="w-1 bg-cyan-400 h-2 animate-bounce"></div>
+              <div className="w-1 bg-emerald-400 h-3 animate-pulse"></div>
+              <div className="w-1 bg-pink-400 h-1.5 animate-bounce"></div>
+              <div className="w-1 bg-amber-400 h-2.5 animate-pulse"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ============================================================== */}
+      {/* 3D-PERSPECTIVE HIGH-PRECISION SPORTS STEERING WHEEL */}
+      {/* Positioned on Left (Driver Side) - 100% Guaranteed Visible & Rotating */}
+      {/* ============================================================== */}
+      <div
+        className="absolute z-30 pointer-events-none"
+        style={{
+          left: '12%',
+          bottom: '2%',
+          width: '360px',
+          height: '360px',
+          transform: `perspective(900px) rotateX(24deg) rotate(${wheelSteerVisual}deg)`,
+          transformOrigin: '50% 50%',
+          transition: 'transform 0.04s ease-out'
+        }}
+      >
+        <svg viewBox="0 0 400 400" className="w-full h-full drop-shadow-2xl">
+          <defs>
+            <radialGradient id="wheelRimGrad" cx="50%" cy="50%" r="50%">
+              <stop offset="78%" stopColor="#1e2430" />
+              <stop offset="90%" stopColor="#11151c" />
+              <stop offset="98%" stopColor="#05070a" />
+              <stop offset="100%" stopColor="#2a3342" />
+            </radialGradient>
+
+            <linearGradient id="metalSpokeGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor="#94a3b8" />
+              <stop offset="50%" stopColor="#475569" />
+              <stop offset="100%" stopColor="#1e293b" />
+            </linearGradient>
+
+            <radialGradient id="hubEmblemGrad" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor="#334155" />
+              <stop offset="75%" stopColor="#0f172a" />
+              <stop offset="100%" stopColor="#020617" />
+            </radialGradient>
+          </defs>
+
+          {/* Paddle Shifters Behind Wheel Rim (+ on Right, - on Left) */}
+          <rect x="52" y="145" width="22" height="65" rx="6" fill="#64748b" stroke="#334155" strokeWidth="2" />
+          <text x="63" y="185" fill="#ffffff" fontSize="18" fontWeight="bold" textAnchor="middle">-</text>
+
+          <rect x="326" y="145" width="22" height="65" rx="6" fill="#64748b" stroke="#334155" strokeWidth="2" />
+          <text x="337" y="185" fill="#ffffff" fontSize="18" fontWeight="bold" textAnchor="middle">+</text>
+
+          {/* Outer Wheel Rim (Perforated Sport Leather Grip) */}
+          <circle
+            cx="200"
+            cy="200"
+            r="165"
+            fill="none"
+            stroke="url(#wheelRimGrad)"
+            strokeWidth="38"
+            filter="drop-shadow(0 15px 25px rgba(0,0,0,0.8))"
+          />
+
+          {/* Top 12 o'clock Racing Alignment Center Stripe (Cyan) */}
+          <path
+            d="M 194,36 A 165,165 0 0,1 206,36"
+            fill="none"
+            stroke="#06b6d4"
+            strokeWidth="38"
+          />
+
+          {/* Inner Chrome Accent Ring */}
+          <circle cx="200" cy="200" r="145" fill="none" stroke="#64748b" strokeWidth="2.5" opacity="0.6" />
+
+          {/* 3 Brushed Metal / Carbon Fiber Wheel Spokes */}
+          {/* Bottom Spoke */}
+          <polygon points="186,220 214,220 208,340 192,340" fill="url(#metalSpokeGrad)" />
+          {/* Left Spoke */}
+          <polygon points="180,190 180,215 56,206 56,182" fill="url(#metalSpokeGrad)" />
+          {/* Right Spoke */}
+          <polygon points="220,190 220,215 344,206 344,182" fill="url(#metalSpokeGrad)" />
+
+          {/* Center Hub & Horn Button */}
+          <circle cx="200" cy="200" r="48" fill="url(#hubEmblemGrad)" stroke="#475569" strokeWidth="3" />
+
+          {/* Gold Luxury Emblem Crest */}
+          <polygon points="200,178 214,196 200,218 186,196" fill="#f59e0b" stroke="#fbbf24" strokeWidth="1.5" />
+          <circle cx="200" cy="196" r="4" fill="#ffffff" />
+        </svg>
+      </div>
+
+      {/* ============================================================== */}
       {/* TOP NOTIFICATIONS & BOTTOM CONTROLS */}
+      {/* ============================================================== */}
       <div className="relative z-20 w-full h-full pointer-events-none flex flex-col justify-between p-8">
         <div className="w-full flex items-center justify-between">
           {nearMissAlert && (
