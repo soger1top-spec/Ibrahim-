@@ -42,6 +42,10 @@ export function ControllerPad({
 
   const stickBaseRef = useRef<HTMLDivElement>(null);
 
+  // Throttling refs to cap stick_move updates at ~30Hz max
+  const lastStickDispatchTimeRef = useRef<number>(0);
+  const lastSentStickRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+
   const dispatchCommand = useCallback((cmd: any) => {
     if (customCommandHandler) {
       customCommandHandler(cmd);
@@ -81,7 +85,7 @@ export function ControllerPad({
     });
   }, [dispatchCommand]);
 
-  // Calculate and dispatch directional stick movement
+  // Calculate and dispatch directional stick movement (Throttled at max 30Hz)
   const updateStickFromCoords = useCallback((clientX: number, clientY: number) => {
     if (!stickBaseRef.current) return;
     const rect = stickBaseRef.current.getBoundingClientRect();
@@ -93,40 +97,52 @@ export function ControllerPad({
     const dy = clientY - centerY;
     const dist = Math.hypot(dx, dy);
 
-    // Tiny deadzone to eliminate resting jitter
+    // Deadzone check
     if (dist < 4) {
       setStickPos({ x: 0, y: 0 });
-      dispatchCommand({
-        type: 'stick_move',
-        stick: { x: 0, y: 0 }
-      });
+      if (lastSentStickRef.current.x !== 0 || lastSentStickRef.current.y !== 0) {
+        lastSentStickRef.current = { x: 0, y: 0 };
+        dispatchCommand({
+          type: 'stick_move',
+          stick: { x: 0, y: 0 }
+        });
+      }
       return;
     }
 
     const angle = Math.atan2(dy, dx);
-
-    // Responsive scaling: reaches full power at 75% of radius so thumbs don't feel heavy or stretched
     const responsiveRadius = radius * 0.75;
     const power = Math.min(1.0, dist / responsiveRadius);
 
     const normX = Number((Math.cos(angle) * power).toFixed(3));
     const normY = Number((Math.sin(angle) * power).toFixed(3));
 
-    // Visual cap position (clamped to physical bounds)
+    // Update local UI position IMMEDIATELY for 60fps responsive knob feedback
     const visualDist = Math.min(dist, radius);
     const visualX = (Math.cos(angle) * visualDist) / radius;
     const visualY = (Math.sin(angle) * visualDist) / radius;
-
     setStickPos({ x: visualX, y: visualY });
-    dispatchCommand({
-      type: 'stick_move',
-      stick: { x: normX, y: normY }
-    });
+
+    // Throttle remote control bridge updates (~33ms min interval or significant delta)
+    const now = performance.now();
+    const dxSinceLast = Math.abs(normX - lastSentStickRef.current.x);
+    const dySinceLast = Math.abs(normY - lastSentStickRef.current.y);
+
+    if (now - lastStickDispatchTimeRef.current >= 33 || dxSinceLast >= 0.04 || dySinceLast >= 0.04) {
+      lastStickDispatchTimeRef.current = now;
+      lastSentStickRef.current = { x: normX, y: normY };
+      dispatchCommand({
+        type: 'stick_move',
+        stick: { x: normX, y: normY }
+      });
+    }
   }, [dispatchCommand]);
 
-  // Reset thumbstick when its specific pointer releases
+  // Reset thumbstick when its specific pointer releases (IMMEDIATE Zero Dispatch)
   const resetStick = useCallback(() => {
     setStickPos({ x: 0, y: 0 });
+    lastSentStickRef.current = { x: 0, y: 0 };
+    lastStickDispatchTimeRef.current = 0;
     dispatchCommand({
       type: 'stick_move',
       stick: { x: 0, y: 0 }

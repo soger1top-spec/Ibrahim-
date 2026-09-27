@@ -169,12 +169,12 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
   };
 
   // -------------------------------------------------------------
-  // BUILD 3D COCKPIT MODEL (Pure Three.js 3D Interior)
+  // BUILD 3D COCKPIT MODEL (Driver First-Person Perspective)
   // -------------------------------------------------------------
   const buildPlayer3DElements = (playerCarGroup: THREE.Group, camera: THREE.PerspectiveCamera) => {
-    // 1. Position Camera inside Driver Seat
-    camera.position.set(-0.35, 1.15, 0);
-    camera.rotation.set(0, 0, 0);
+    // 1. Precise Camera Position at Driver's Eye Level (Left Driver Seat)
+    camera.position.set(-0.38, 1.12, 0.05);
+    camera.rotation.set(0, 0, 0); // Looking straight forward along negative Z axis
     camera.up.set(0, 1, 0);
     playerCarGroup.add(camera);
 
@@ -184,37 +184,37 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     const chromeMat = new THREE.MeshStandardMaterial({ color: 0xd4d4d8, metalness: 0.9, roughness: 0.1 });
     const mirrorGlassMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.1, metalness: 0.9 });
 
-    // 2. 3D Windshield Frame & Roof Interior
+    // 2. 3D Roof & Windshield Frame Interior
     const roofMesh = new THREE.Mesh(
       new THREE.BoxGeometry(2.2, 0.15, 0.8),
       darkInteriorMat
     );
-    roofMesh.position.set(0, 1.48, -0.2);
+    roofMesh.position.set(0, 1.45, -0.2);
     playerCarGroup.add(roofMesh);
 
-    // Left A-Pillar (Driver side)
+    // Left A-Pillar (Driver Side)
     const leftPillar = new THREE.Mesh(
       new THREE.BoxGeometry(0.08, 0.9, 0.08),
       darkInteriorMat
     );
-    leftPillar.position.set(-0.9, 1.05, -0.4);
+    leftPillar.position.set(-0.88, 1.02, -0.38);
     leftPillar.rotation.z = -0.38;
     leftPillar.rotation.y = 0.15;
     playerCarGroup.add(leftPillar);
 
-    // Right A-Pillar (Passenger side)
+    // Right A-Pillar (Passenger Side)
     const rightPillar = new THREE.Mesh(
       new THREE.BoxGeometry(0.08, 0.9, 0.08),
       darkInteriorMat
     );
-    rightPillar.position.set(0.9, 1.05, -0.4);
+    rightPillar.position.set(0.88, 1.02, -0.38);
     rightPillar.rotation.z = 0.38;
     rightPillar.rotation.y = -0.15;
     playerCarGroup.add(rightPillar);
 
     // 3. 3D Side Wing Mirrors
     const leftMirrorGroup = new THREE.Group();
-    leftMirrorGroup.position.set(-0.98, 0.95, -0.45);
+    leftMirrorGroup.position.set(-0.96, 0.92, -0.42);
     const leftMirrorHousing = new THREE.Mesh(
       new THREE.BoxGeometry(0.18, 0.12, 0.08),
       darkInteriorMat
@@ -233,7 +233,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
 
     // 4. 3D Rearview Mirror (Hanging from roof center)
     const centerMirrorGroup = new THREE.Group();
-    centerMirrorGroup.position.set(0.2, 1.35, -0.45);
+    centerMirrorGroup.position.set(0.15, 1.32, -0.42);
 
     const mirrorStem = new THREE.Mesh(
       new THREE.CylinderGeometry(0.012, 0.012, 0.1, 8),
@@ -258,38 +258,38 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
 
     // 5. 3D Dashboard Assembly
     const dashMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(2.0, 0.35, 0.7),
+      new THREE.BoxGeometry(2.0, 0.32, 0.65),
       dashLeatherMat
     );
-    dashMesh.position.set(0, 0.55, -0.65);
+    dashMesh.position.set(0, 0.52, -0.58);
     playerCarGroup.add(dashMesh);
 
-    // Instrument Cluster Hood
+    // Instrument Cluster Hood (Behind Steering Wheel)
     const hoodMesh = new THREE.Mesh(
       new THREE.CylinderGeometry(0.32, 0.35, 0.5, 16, 1, false, 0, Math.PI),
       dashLeatherMat
     );
     hoodMesh.rotateZ(Math.PI / 2);
-    hoodMesh.position.set(-0.35, 0.72, -0.58);
+    hoodMesh.position.set(-0.38, 0.76, -0.52);
     playerCarGroup.add(hoodMesh);
 
-    // 6. 3D Steering Wheel Group
+    // 6. 3D Steering Wheel Group (Aligned directly in front of Driver Seat)
     const steeringWheelGroup = new THREE.Group();
-    steeringWheelGroup.position.set(-0.35, 0.68, -0.55);
-    steeringWheelGroup.rotation.x = -0.22; // Tilt slightly toward driver
+    steeringWheelGroup.position.set(-0.38, 0.72, -0.45);
+    steeringWheelGroup.rotation.x = -0.25; // Tilted toward driver
 
-    // Wheel Outer Rim (Torus)
+    // Wheel Outer Rim
     const wheelRimGeo = new THREE.TorusGeometry(0.22, 0.035, 20, 36);
     const wheelRimMat = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.6, metalness: 0.2 });
     const wheelRimMesh = new THREE.Mesh(wheelRimGeo, wheelRimMat);
     steeringWheelGroup.add(wheelRimMesh);
 
-    // Inner Chrome Ring Accent
+    // Inner Chrome Accent
     const chromeRingGeo = new THREE.TorusGeometry(0.18, 0.007, 12, 32);
     const chromeRingMesh = new THREE.Mesh(chromeRingGeo, chromeMat);
     steeringWheelGroup.add(chromeRingMesh);
 
-    // Wheel Hub Cap
+    // Wheel Hub
     const hubCap = new THREE.Mesh(
       new THREE.CylinderGeometry(0.065, 0.065, 0.03, 32),
       darkInteriorMat
@@ -326,7 +326,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
 
     playerCarGroup.add(steeringWheelGroup);
 
-    // 7. Metallic Car Bonnet / Hood
+    // 7. Metallic Car Bonnet / Hood (Extends forward in front of windshield)
     const bonnetGeo = new THREE.BoxGeometry(1.95, 0.28, 2.2);
     const bonnetMat = new THREE.MeshStandardMaterial({
       color: 0x3f3f46,
@@ -334,7 +334,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       roughness: 0.1
     });
     const bonnetMesh = new THREE.Mesh(bonnetGeo, bonnetMat);
-    bonnetMesh.position.set(0, 0.38, -1.65);
+    bonnetMesh.position.set(0, 0.38, -1.6);
     bonnetMesh.castShadow = true;
     bonnetMesh.receiveShadow = true;
     playerCarGroup.add(bonnetMesh);
