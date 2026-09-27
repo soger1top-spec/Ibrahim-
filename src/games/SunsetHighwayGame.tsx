@@ -10,22 +10,22 @@ interface SunsetHighwayGameProps {
 }
 
 // -------------------------------------------------------------
-// GAME CONFIGURATION & CONSTANTS
+// GAMEPLAY CONFIGURATION
 // -------------------------------------------------------------
 const LANES_COUNT = 4;
 const LANE_WIDTH = 3.6;
 const ROAD_TOTAL_WIDTH = LANE_WIDTH * LANES_COUNT; // 14.4 units
-const LANE_POSITIONS = [-5.4, -1.8, 1.8, 5.4]; // 4 Lanes
+const LANE_POSITIONS = [-5.4, -1.8, 1.8, 5.4];
 
 const MAX_SPEED_KMH = 140;
 const MIN_SPEED_KMH = 0;
-const ACCEL_RATE = 35;
-const BRAKE_RATE = 85;
+const ACCEL_RATE = 38;
+const BRAKE_RATE = 90;
 const NATURAL_DECEL = 14;
 
-const ROAD_LENGTH = 280;
-const TRAFFIC_COUNT = 7;
-const MIN_TRAFFIC_GAP_Z = 35; // Minimum safe Z distance between traffic vehicles in same lane
+const ROAD_SEGMENT_LENGTH = 320;
+const TRAFFIC_COUNT = 6;
+const MIN_TRAFFIC_GAP_Z = 40;
 
 interface NPCTrafficCar {
   mesh: THREE.Group;
@@ -42,7 +42,7 @@ interface NPCTrafficCar {
 export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHighwayGameProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  // React HUD States (Updated throttled to avoid re-render stutter)
+  // HUD States
   const [isGameOver, setIsGameOver] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [score, setScore] = useState(0);
@@ -50,14 +50,13 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     return parseInt(localStorage.getItem('sunset_drive_3d_highscore') || '0', 10);
   });
   const [distanceKm, setDistanceKm] = useState(0);
-  const [currentSpeed, setCurrentSpeed] = useState(60); // km/h
+  const [currentSpeed, setCurrentSpeed] = useState(60);
   const [nearMissAlert, setNearMissAlert] = useState<string | null>(null);
   const [isHighBeaming, setIsHighBeaming] = useState(false);
 
-  // High score ref to decouple render loop from React state changes
   const highScoreRef = useRef(highScore);
 
-  // Gameplay State Ref (Mutable for 60FPS physics loop)
+  // Gameplay State Ref (Maintains 60FPS physics uninterrupted)
   const gameStateRef = useRef({
     speedKmh: 60,
     playerX: LANE_POSITIONS[1], // Start in lane 1 (-1.8)
@@ -75,329 +74,257 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     isPaused: false
   });
 
-  // Three.js Core Ref
+  // Three.js Scene References
   const threeRef = useRef<{
     scene: THREE.Scene;
     camera: THREE.PerspectiveCamera;
     renderer: THREE.WebGLRenderer;
     playerCarGroup: THREE.Group;
     steeringWheelGroup: THREE.Group;
-    bonnetMesh: THREE.Mesh;
     roadPlane: THREE.Mesh;
-    laneLinesGroup: THREE.Group;
-    lampsInstancedMesh: THREE.InstancedMesh;
-    treesInstancedMesh: THREE.InstancedMesh;
-    lampZPositions: number[];
-    treeZPositions: number[];
+    laneLines: THREE.Mesh[];
+    sceneryItems: THREE.Group[];
     trafficPool: NPCTrafficCar[];
     headlightSpot: THREE.SpotLight;
   } | null>(null);
 
   // -------------------------------------------------------------
-  // HELPER: BUILD 3D NPC TRAFFIC (Box Trucks & Sedans)
+  // BUILD 3D TRAFFIC VEHICLES (Low-poly & fast for TV GPU)
   // -------------------------------------------------------------
-  const create3DNPCCarMesh = (isTruck: boolean, bodyColorHex: number) => {
-    const carGroup = new THREE.Group();
+  const createTrafficCar = (isTruck: boolean, colorHex: number) => {
+    const group = new THREE.Group();
 
     if (isTruck) {
-      // White Delivery Box Truck
-      const cabMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.3, metalness: 0.5 });
-      const boxMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.6, metalness: 0.1 });
-      const glassMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.1 });
+      // White delivery box truck
+      const cabMat = new THREE.MeshLambertMaterial({ color: 0xe2e8f0 });
+      const boxMat = new THREE.MeshLambertMaterial({ color: 0xf1f5f9 });
+      const darkMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
 
-      const cabMesh = new THREE.Mesh(new THREE.BoxGeometry(2.0, 1.4, 1.6), cabMat);
-      cabMesh.position.set(0, 0.9, -1.8);
-      carGroup.add(cabMesh);
+      // Cab
+      const cab = new THREE.Mesh(new THREE.BoxGeometry(2.0, 1.4, 1.6), cabMat);
+      cab.position.set(0, 0.9, -1.8);
+      group.add(cab);
 
-      const winMesh = new THREE.Mesh(new THREE.BoxGeometry(1.85, 0.6, 0.1), glassMat);
-      winMesh.position.set(0, 1.2, -2.55);
-      carGroup.add(winMesh);
+      // Windshield
+      const win = new THREE.Mesh(new THREE.BoxGeometry(1.85, 0.6, 0.05), darkMat);
+      win.position.set(0, 1.15, -2.62);
+      group.add(win);
 
-      const boxMesh = new THREE.Mesh(new THREE.BoxGeometry(2.2, 2.2, 4.2), boxMat);
-      boxMesh.position.set(0, 1.5, 0.9);
-      boxMesh.castShadow = true;
-      carGroup.add(boxMesh);
+      // Box Container
+      const box = new THREE.Mesh(new THREE.BoxGeometry(2.2, 2.2, 4.2), boxMat);
+      box.position.set(0, 1.5, 0.9);
+      group.add(box);
 
+      // Taillights
       const tlMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
-      const tlLeft = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.2, 0.05), tlMat);
-      tlLeft.position.set(-0.85, 0.8, 3.02);
-      carGroup.add(tlLeft);
+      const tlL = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.2, 0.05), tlMat);
+      tlL.position.set(-0.85, 0.8, 3.02);
+      group.add(tlL);
 
-      const tlRight = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.2, 0.05), tlMat);
-      tlRight.position.set(0.85, 0.8, 3.02);
-      carGroup.add(tlRight);
+      const tlR = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.2, 0.05), tlMat);
+      tlR.position.set(0.85, 0.8, 3.02);
+      group.add(tlR);
     } else {
-      // Low-Poly Sedan Car
-      const bodyMat = new THREE.MeshStandardMaterial({ color: bodyColorHex, roughness: 0.3, metalness: 0.7 });
-      const glassMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.1 });
+      // Passenger Sedan Car
+      const bodyMat = new THREE.MeshLambertMaterial({ color: colorHex });
+      const glassMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
 
-      const bodyMesh = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.75, 4.0), bodyMat);
-      bodyMesh.position.y = 0.55;
-      bodyMesh.castShadow = true;
-      carGroup.add(bodyMesh);
+      // Body
+      const body = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.7, 4.0), bodyMat);
+      body.position.y = 0.55;
+      group.add(body);
 
-      const cabinMesh = new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.65, 2.1), glassMat);
-      cabinMesh.position.set(0, 1.15, -0.2);
-      carGroup.add(cabinMesh);
+      // Cabin
+      const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.6, 2.1), glassMat);
+      cabin.position.set(0, 1.1, -0.2);
+      group.add(cabin);
 
+      // Taillights
       const tlMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
-      const tlLeft = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.16, 0.05), tlMat);
-      tlLeft.position.set(-0.65, 0.7, 2.02);
-      carGroup.add(tlLeft);
+      const tlL = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.16, 0.05), tlMat);
+      tlL.position.set(-0.65, 0.65, 2.02);
+      group.add(tlL);
 
-      const tlRight = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.16, 0.05), tlMat);
-      tlRight.position.set(0.65, 0.7, 2.02);
-      carGroup.add(tlRight);
+      const tlR = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.16, 0.05), tlMat);
+      tlR.position.set(0.65, 0.65, 2.02);
+      group.add(tlR);
     }
 
-    // 4 Wheels
+    // Contact shadow plane underneath
+    const shadowMat = new THREE.MeshBasicMaterial({
+      color: 0x09090b,
+      transparent: true,
+      opacity: 0.45
+    });
+    const shadow = new THREE.Mesh(new THREE.PlaneGeometry(2.3, 4.4), shadowMat);
+    shadow.rotation.x = -Math.PI / 2;
+    shadow.position.y = 0.02;
+    group.add(shadow);
+
+    // Wheels
     const wheels: THREE.Mesh[] = [];
-    const wheelGeo = new THREE.CylinderGeometry(0.35, 0.35, 0.22, 12);
+    const wheelGeo = new THREE.CylinderGeometry(0.32, 0.32, 0.2, 10);
     wheelGeo.rotateZ(Math.PI / 2);
-    const tireMat = new THREE.MeshStandardMaterial({ color: 0x181818, roughness: 0.8 });
+    const tireMat = new THREE.MeshBasicMaterial({ color: 0x18181b });
 
     [-0.95, 0.95].forEach(wx => {
       [-1.2, 1.2].forEach(wz => {
         const w = new THREE.Mesh(wheelGeo, tireMat);
-        w.position.set(wx, 0.35, wz);
-        carGroup.add(w);
+        w.position.set(wx, 0.32, wz);
+        group.add(w);
         wheels.push(w);
       });
     });
 
-    return { carGroup, wheels };
+    return { group, wheels };
   };
 
   // -------------------------------------------------------------
-  // BUILD 3D COCKPIT MODEL (Driver First-Person Perspective)
+  // BUILD REALISTIC DRIVER FIRST-PERSON COCKPIT & SLOPED BONNET
   // -------------------------------------------------------------
-  const buildPlayer3DElements = (playerCarGroup: THREE.Group, camera: THREE.PerspectiveCamera) => {
-    // 1. Precise Camera Position at Driver's Eye Level (Left Driver Seat)
-    camera.position.set(-0.38, 1.12, 0.05);
-    camera.rotation.set(0, 0, 0); // Looking straight forward along negative Z axis
+  const buildDriverCockpit = (playerCarGroup: THREE.Group, camera: THREE.PerspectiveCamera) => {
+    // 1. Position camera at driver eye level (Left side)
+    camera.position.set(-0.35, 1.02, 0.0);
+    camera.rotation.set(-0.03, 0, 0); // Slight natural downward glance to road
     camera.up.set(0, 1, 0);
     playerCarGroup.add(camera);
 
-    // High-Quality Interior Materials
-    const darkInteriorMat = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.7, metalness: 0.2 });
-    const dashLeatherMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.8, metalness: 0.1 });
-    const chromeMat = new THREE.MeshStandardMaterial({ color: 0xd4d4d8, metalness: 0.9, roughness: 0.1 });
-    const mirrorGlassMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.1, metalness: 0.9 });
+    const darkLeather = new THREE.MeshLambertMaterial({ color: 0x18181b });
+    const dashCoverMat = new THREE.MeshLambertMaterial({ color: 0x27272a });
+    const chromeMat = new THREE.MeshLambertMaterial({ color: 0xd4d4d8 });
+    const carPaintMat = new THREE.MeshLambertMaterial({ color: 0x3f3f46 }); // Metallic gray car paint
 
-    // 2. 3D Roof & Windshield Frame Interior
-    const roofMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(2.2, 0.15, 0.8),
-      darkInteriorMat
+    // 2. Realistic Low-Profile Sloped Dashboard (Only occupies bottom ~20% of screen)
+    const dash = new THREE.Mesh(
+      new THREE.BoxGeometry(2.1, 0.22, 0.55),
+      darkLeather
     );
-    roofMesh.position.set(0, 1.45, -0.2);
-    playerCarGroup.add(roofMesh);
+    dash.position.set(0, 0.52, -0.5);
+    playerCarGroup.add(dash);
 
-    // Left A-Pillar (Driver Side)
-    const leftPillar = new THREE.Mesh(
-      new THREE.BoxGeometry(0.08, 0.9, 0.08),
-      darkInteriorMat
+    // Instrument Cluster Hood (Directly behind steering wheel)
+    const cluster = new THREE.Mesh(
+      new THREE.BoxGeometry(0.55, 0.14, 0.3),
+      dashCoverMat
     );
-    leftPillar.position.set(-0.88, 1.02, -0.38);
-    leftPillar.rotation.z = -0.38;
-    leftPillar.rotation.y = 0.15;
-    playerCarGroup.add(leftPillar);
+    cluster.position.set(-0.35, 0.65, -0.45);
+    cluster.rotation.x = -0.15;
+    playerCarGroup.add(cluster);
 
-    // Right A-Pillar (Passenger Side)
-    const rightPillar = new THREE.Mesh(
-      new THREE.BoxGeometry(0.08, 0.9, 0.08),
-      darkInteriorMat
+    // Luminous Gauges Display
+    const gaugeCanvas = document.createElement('canvas');
+    gaugeCanvas.width = 256; gaugeCanvas.height = 128;
+    const gctx = gaugeCanvas.getContext('2d');
+    if (gctx) {
+      gctx.fillStyle = '#09090b'; gctx.fillRect(0, 0, 256, 128);
+      gctx.strokeStyle = '#38bdf8'; gctx.lineWidth = 6;
+      gctx.beginPath(); gctx.arc(68, 64, 45, Math.PI * 0.7, Math.PI * 2.1); gctx.stroke();
+      gctx.beginPath(); gctx.arc(188, 64, 45, Math.PI * 0.9, Math.PI * 2.3); gctx.stroke();
+      gctx.fillStyle = '#f8fafc'; gctx.font = 'bold 22px monospace';
+      gctx.fillText('CRUISE', 85, 72);
+    }
+    const gaugeTex = new THREE.CanvasTexture(gaugeCanvas);
+    const gaugeScreen = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.38, 0.16),
+      new THREE.MeshBasicMaterial({ map: gaugeTex })
     );
-    rightPillar.position.set(0.88, 1.02, -0.38);
-    rightPillar.rotation.z = 0.38;
-    rightPillar.rotation.y = -0.15;
-    playerCarGroup.add(rightPillar);
+    gaugeScreen.position.set(-0.35, 0.66, -0.42);
+    gaugeScreen.rotation.x = -0.22;
+    playerCarGroup.add(gaugeScreen);
 
-    // 3. 3D Side Wing Mirrors
-    const leftMirrorGroup = new THREE.Group();
-    leftMirrorGroup.position.set(-0.96, 0.92, -0.42);
-    const leftMirrorHousing = new THREE.Mesh(
-      new THREE.BoxGeometry(0.18, 0.12, 0.08),
-      darkInteriorMat
-    );
-    leftMirrorHousing.rotation.y = -0.3;
-    leftMirrorGroup.add(leftMirrorHousing);
-
-    const leftMirrorGlass = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.16, 0.1),
-      mirrorGlassMat
-    );
-    leftMirrorGlass.position.set(0.02, 0, 0.042);
-    leftMirrorGlass.rotation.y = Math.PI - 0.2;
-    leftMirrorGroup.add(leftMirrorGlass);
-    playerCarGroup.add(leftMirrorGroup);
-
-    // 4. 3D Rearview Mirror (Hanging from roof center)
-    const centerMirrorGroup = new THREE.Group();
-    centerMirrorGroup.position.set(0.15, 1.32, -0.42);
-
-    const mirrorStem = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.012, 0.012, 0.1, 8),
-      darkInteriorMat
-    );
-    mirrorStem.position.set(0, 0.05, 0);
-    centerMirrorGroup.add(mirrorStem);
-
-    const mirrorFrame = new THREE.Mesh(
-      new THREE.BoxGeometry(0.32, 0.1, 0.04),
-      darkInteriorMat
-    );
-    centerMirrorGroup.add(mirrorFrame);
-
-    const mirrorGlass = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.3, 0.08),
-      mirrorGlassMat
-    );
-    mirrorGlass.position.set(0, 0, 0.021);
-    centerMirrorGroup.add(mirrorGlass);
-    playerCarGroup.add(centerMirrorGroup);
-
-    // 5. 3D Dashboard Assembly
-    const dashMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(2.0, 0.32, 0.65),
-      dashLeatherMat
-    );
-    dashMesh.position.set(0, 0.52, -0.58);
-    playerCarGroup.add(dashMesh);
-
-    // Instrument Cluster Hood (Behind Steering Wheel)
-    const hoodMesh = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.32, 0.35, 0.5, 16, 1, false, 0, Math.PI),
-      dashLeatherMat
-    );
-    hoodMesh.rotateZ(Math.PI / 2);
-    hoodMesh.position.set(-0.38, 0.76, -0.52);
-    playerCarGroup.add(hoodMesh);
-
-    // 6. 3D Steering Wheel Group (Aligned directly in front of Driver Seat)
+    // 3. Real 3D Steering Wheel (Positioned right in front of driver's hands)
     const steeringWheelGroup = new THREE.Group();
-    steeringWheelGroup.position.set(-0.38, 0.72, -0.45);
-    steeringWheelGroup.rotation.x = -0.25; // Tilted toward driver
+    steeringWheelGroup.position.set(-0.35, 0.66, -0.42);
+    steeringWheelGroup.rotation.x = -0.25;
 
-    // Wheel Outer Rim
-    const wheelRimGeo = new THREE.TorusGeometry(0.22, 0.035, 20, 36);
-    const wheelRimMat = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.6, metalness: 0.2 });
-    const wheelRimMesh = new THREE.Mesh(wheelRimGeo, wheelRimMat);
-    steeringWheelGroup.add(wheelRimMesh);
-
-    // Inner Chrome Accent
-    const chromeRingGeo = new THREE.TorusGeometry(0.18, 0.007, 12, 32);
-    const chromeRingMesh = new THREE.Mesh(chromeRingGeo, chromeMat);
-    steeringWheelGroup.add(chromeRingMesh);
-
-    // Wheel Hub
-    const hubCap = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.065, 0.065, 0.03, 32),
-      darkInteriorMat
+    // Rim
+    const wheelRim = new THREE.Mesh(
+      new THREE.TorusGeometry(0.19, 0.026, 14, 28),
+      darkLeather
     );
-    hubCap.rotation.x = Math.PI / 2;
-    steeringWheelGroup.add(hubCap);
+    steeringWheelGroup.add(wheelRim);
 
-    // 3 Aluminum Spokes
-    const spokeMat = new THREE.MeshStandardMaterial({ color: 0x71717a, metalness: 0.85, roughness: 0.15 });
+    // Center Hub
+    const hub = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.055, 0.055, 0.025, 20),
+      dashCoverMat
+    );
+    hub.rotation.x = Math.PI / 2;
+    steeringWheelGroup.add(hub);
 
-    const spokeBottom = new THREE.Mesh(new THREE.BoxGeometry(0.032, 0.15, 0.015), spokeMat);
-    spokeBottom.position.set(0, -0.09, 0);
-    steeringWheelGroup.add(spokeBottom);
+    // Spokes
+    const spokeB = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.13, 0.012), chromeMat);
+    spokeB.position.set(0, -0.075, 0);
+    steeringWheelGroup.add(spokeB);
 
-    const spokeLeft = new THREE.Mesh(new THREE.BoxGeometry(0.032, 0.15, 0.015), spokeMat);
-    spokeLeft.position.set(-0.09, 0.02, 0);
-    spokeLeft.rotation.z = Math.PI / 3;
-    steeringWheelGroup.add(spokeLeft);
+    const spokeL = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.13, 0.012), chromeMat);
+    spokeL.position.set(-0.075, 0.02, 0);
+    spokeL.rotation.z = Math.PI / 3;
+    steeringWheelGroup.add(spokeL);
 
-    const spokeRight = new THREE.Mesh(new THREE.BoxGeometry(0.032, 0.15, 0.015), spokeMat);
-    spokeRight.position.set(0.09, 0.02, 0);
-    spokeRight.rotation.z = -Math.PI / 3;
-    steeringWheelGroup.add(spokeRight);
-
-    // Paddle Shifters
-    const paddleGeo = new THREE.BoxGeometry(0.022, 0.08, 0.01);
-    const paddleLeft = new THREE.Mesh(paddleGeo, chromeMat);
-    paddleLeft.position.set(-0.16, 0.02, -0.02);
-    steeringWheelGroup.add(paddleLeft);
-
-    const paddleRight = new THREE.Mesh(paddleGeo, chromeMat);
-    paddleRight.position.set(0.16, 0.02, -0.02);
-    steeringWheelGroup.add(paddleRight);
+    const spokeR = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.13, 0.012), chromeMat);
+    spokeR.position.set(0.075, 0.02, 0);
+    spokeR.rotation.z = -Math.PI / 3;
+    steeringWheelGroup.add(spokeR);
 
     playerCarGroup.add(steeringWheelGroup);
 
-    // 7. Metallic Car Bonnet / Hood (Extends forward in front of windshield)
-    const bonnetGeo = new THREE.BoxGeometry(1.95, 0.28, 2.2);
-    const bonnetMat = new THREE.MeshStandardMaterial({
-      color: 0x3f3f46,
-      metalness: 0.9,
-      roughness: 0.1
-    });
-    const bonnetMesh = new THREE.Mesh(bonnetGeo, bonnetMat);
-    bonnetMesh.position.set(0, 0.38, -1.6);
-    bonnetMesh.castShadow = true;
-    bonnetMesh.receiveShadow = true;
+    // 4. REALISTIC SLOPED BONNET / HOOD (ينحدر برفق للأمام ولا يحجب الأفق)
+    // Starts at base of windshield (y = 0.50, z = -0.7) and slopes forward to (y = 0.36, z = -2.6)
+    const bonnetGeo = new THREE.BoxGeometry(1.85, 0.08, 1.9);
+    const bonnetMesh = new THREE.Mesh(bonnetGeo, carPaintMat);
+    bonnetMesh.position.set(0, 0.42, -1.65);
+    bonnetMesh.rotation.x = -0.065; // Sloped gently down toward front bumper
     playerCarGroup.add(bonnetMesh);
 
-    // 8. Headlight Spotlight
-    const headlightSpot = new THREE.SpotLight(0xfff5ea, 5, 120, Math.PI / 5, 0.5, 1);
-    headlightSpot.position.set(0, 0.5, -1.2);
-    headlightSpot.target.position.set(0, 0, -50);
+    // Bonnet center crease line for realistic vehicle contour
+    const creaseMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(0.08, 0.03, 1.9),
+      new THREE.MeshLambertMaterial({ color: 0x52525b })
+    );
+    creaseMesh.position.set(0, 0.045, 0);
+    bonnetMesh.add(creaseMesh);
+
+    // 5. Rearview Mirror (Hanging top right)
+    const mirrorGroup = new THREE.Group();
+    mirrorGroup.position.set(0.18, 1.25, -0.42);
+
+    const mirrorFrame = new THREE.Mesh(
+      new THREE.BoxGeometry(0.3, 0.09, 0.03),
+      darkLeather
+    );
+    mirrorGroup.add(mirrorFrame);
+
+    const mirrorGlass = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.28, 0.07),
+      new THREE.MeshBasicMaterial({ color: 0x64748b })
+    );
+    mirrorGlass.position.set(0, 0, 0.016);
+    mirrorGroup.add(mirrorGlass);
+
+    playerCarGroup.add(mirrorGroup);
+
+    // 6. Thin Left A-Pillar (Framing left edge subtly)
+    const leftPillar = new THREE.Mesh(
+      new THREE.BoxGeometry(0.06, 0.9, 0.06),
+      darkLeather
+    );
+    leftPillar.position.set(-0.85, 0.95, -0.35);
+    leftPillar.rotation.z = -0.42;
+    playerCarGroup.add(leftPillar);
+
+    // 7. Headlight Spotlight
+    const headlightSpot = new THREE.SpotLight(0xfff5ea, 4, 120, Math.PI / 4, 0.5, 1);
+    headlightSpot.position.set(0, 0.4, -1.2);
+    headlightSpot.target.position.set(0, 0, -45);
     playerCarGroup.add(headlightSpot);
     playerCarGroup.add(headlightSpot.target);
 
-    return { steeringWheelGroup, bonnetMesh, headlightSpot };
+    return { steeringWheelGroup, headlightSpot };
   };
 
   // -------------------------------------------------------------
-  // TRAFFIC RECYCLING SAFETY & MINIMUM DISTANCE CHECK
-  // -------------------------------------------------------------
-  const findSafeRespawnPosition = (
-    trafficPool: NPCTrafficCar[],
-    currentCarIndex: number
-  ) => {
-    // Try candidate lanes
-    const candidateLanes = [0, 1, 2, 3].sort(() => Math.random() - 0.5);
-
-    for (const lane of candidateLanes) {
-      // Find cars in this lane
-      const carsInLane = trafficPool.filter(
-        (c, idx) => idx !== currentCarIndex && c.targetLane === lane
-      );
-
-      // Find the furthest car back in this lane (smallest Z value)
-      let minZInLane = -180;
-      let hasOverlap = false;
-
-      for (const otherCar of carsInLane) {
-        if (otherCar.z < minZInLane) {
-          minZInLane = otherCar.z;
-        }
-      }
-
-      // Candidate Z position ahead of camera
-      const candidateZ = Math.min(-200, minZInLane - MIN_TRAFFIC_GAP_Z - Math.random() * 20);
-
-      // Verify no other car is within MIN_TRAFFIC_GAP_Z
-      for (const otherCar of carsInLane) {
-        if (Math.abs(otherCar.z - candidateZ) < MIN_TRAFFIC_GAP_Z) {
-          hasOverlap = true;
-          break;
-        }
-      }
-
-      if (!hasOverlap) {
-        return { lane, z: candidateZ };
-      }
-    }
-
-    // Fallback if all lanes busy: place far back
-    const fallbackLane = Math.floor(Math.random() * LANES_COUNT);
-    return { lane: fallbackLane, z: -250 - currentCarIndex * 25 };
-  };
-
-  // -------------------------------------------------------------
-  // INITIALIZE THREE.JS SCENE
+  // INITIALIZE THREE.JS SCENE (Guaranteed 60FPS TV Performance)
   // -------------------------------------------------------------
   useEffect(() => {
     if (!containerRef.current) return;
@@ -405,145 +332,130 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     const width = container.clientWidth || window.innerWidth;
     const height = container.clientHeight || window.innerHeight;
 
-    // 1. Scene & Sunset Sky Fog
+    // 1. Scene & Sunset Fog
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xf97316); // Golden Orange Sunset
-    scene.fog = new THREE.FogExp2(0xf97316, 0.006); // Soft atmospheric fog
+    scene.background = new THREE.Color(0xf59e0b); // Sunset Golden Horizon
+    scene.fog = new THREE.FogExp2(0xf59e0b, 0.007); // Soft fog fading distant vehicles smoothly
 
-    // 2. Camera Setup
-    const camera = new THREE.PerspectiveCamera(65, width / height, 0.1, 220);
+    // 2. Camera Setup (Wide panoramic view)
+    const camera = new THREE.PerspectiveCamera(62, width / height, 0.1, 260);
 
-    // 3. WebGL Renderer with Smart Pixel Ratio (Limits rendering overhead on TV/weaker devices)
+    // 3. Renderer with Smart Performance Configuration
     const renderer = new THREE.WebGLRenderer({
-      antialias: true,
+      antialias: false, // Turn off on TV for massive framerate boost
       powerPreference: 'high-performance'
     });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.1;
+    renderer.setPixelRatio(1.0); // Exact 1:1 pixel mapping for 60fps on TV screens
     container.appendChild(renderer.domElement);
 
-    // 4. Player Vehicle Group
-    const playerCarGroup = new THREE.Group();
-    playerCarGroup.position.set(LANE_POSITIONS[1], 0, 0); // Start in lane 1
-    scene.add(playerCarGroup);
-
-    // Attach 3D Steering Wheel & Camera
-    const { steeringWheelGroup, bonnetMesh, headlightSpot } = buildPlayer3DElements(playerCarGroup, camera);
-
-    // 5. Lighting (Sunset Sun on Right Horizon)
-    const sunLight = new THREE.DirectionalLight(0xffbe76, 2.8);
-    sunLight.position.set(45, 12, -90);
-    sunLight.castShadow = true;
-    sunLight.shadow.mapSize.width = 1024;
-    sunLight.shadow.mapSize.height = 1024;
-    sunLight.shadow.camera.near = 1;
-    sunLight.shadow.camera.far = 200;
+    // 4. Lighting (Warm sunset sun low on right horizon)
+    const sunLight = new THREE.DirectionalLight(0xffbe76, 2.5);
+    sunLight.position.set(50, 15, -80);
     scene.add(sunLight);
 
-    const ambientLight = new THREE.AmbientLight(0x7c3aed, 0.7);
+    const ambientLight = new THREE.AmbientLight(0x7c3aed, 0.6); // Purple/indigo road fill
     scene.add(ambientLight);
 
-    // 6. Multi-Lane Asphalt Highway
-    const roadPlaneGeo = new THREE.PlaneGeometry(ROAD_TOTAL_WIDTH + 8, ROAD_LENGTH);
-    const roadPlaneMat = new THREE.MeshStandardMaterial({
-      color: 0x27272a,
-      roughness: 0.5,
-      metalness: 0.15
-    });
-    const roadPlane = new THREE.Mesh(roadPlaneGeo, roadPlaneMat);
+    // Sun Sphere Glowing Disc on Horizon
+    const sunDiscMat = new THREE.MeshBasicMaterial({ color: 0xffedd5 });
+    const sunDisc = new THREE.Mesh(new THREE.CircleGeometry(16, 24), sunDiscMat);
+    sunDisc.position.set(65, 20, -220);
+    scene.add(sunDisc);
+
+    // 5. Player Vehicle Group
+    const playerCarGroup = new THREE.Group();
+    playerCarGroup.position.set(LANE_POSITIONS[1], 0, 0);
+    scene.add(playerCarGroup);
+
+    // Attach Driver First-Person Cockpit
+    const { steeringWheelGroup, headlightSpot } = buildDriverCockpit(playerCarGroup, camera);
+
+    // 6. Asphalt Highway Road Plane
+    const roadMat = new THREE.MeshLambertMaterial({ color: 0x1f242d });
+    const roadPlane = new THREE.Mesh(
+      new THREE.PlaneGeometry(ROAD_TOTAL_WIDTH + 8, ROAD_SEGMENT_LENGTH),
+      roadMat
+    );
     roadPlane.rotation.x = -Math.PI / 2;
-    roadPlane.position.set(0, 0, -ROAD_LENGTH / 2 + 20);
-    roadPlane.receiveShadow = true;
+    roadPlane.position.set(0, 0, -ROAD_SEGMENT_LENGTH / 2 + 20);
     scene.add(roadPlane);
 
-    // Guardrails
-    const guardMat = new THREE.MeshStandardMaterial({ color: 0x64748b, metalness: 0.8, roughness: 0.2 });
-    const guardGeo = new THREE.BoxGeometry(0.5, 0.45, ROAD_LENGTH);
+    // Guardrails Left and Right
+    const guardMat = new THREE.MeshLambertMaterial({ color: 0x64748b });
+    const guardGeo = new THREE.BoxGeometry(0.4, 0.45, ROAD_SEGMENT_LENGTH);
 
-    const guardLeft = new THREE.Mesh(guardGeo, guardMat);
-    guardLeft.position.set(-ROAD_TOTAL_WIDTH / 2 - 0.4, 0.22, -ROAD_LENGTH / 2 + 20);
-    guardLeft.castShadow = true;
-    scene.add(guardLeft);
+    const guardL = new THREE.Mesh(guardGeo, guardMat);
+    guardL.position.set(-ROAD_TOTAL_WIDTH / 2 - 0.5, 0.22, -ROAD_SEGMENT_LENGTH / 2 + 20);
+    scene.add(guardL);
 
-    const guardRight = new THREE.Mesh(guardGeo, guardMat);
-    guardRight.position.set(ROAD_TOTAL_WIDTH / 2 + 0.4, 0.22, -ROAD_LENGTH / 2 + 20);
-    guardRight.castShadow = true;
-    scene.add(guardRight);
+    const guardR = new THREE.Mesh(guardGeo, guardMat);
+    guardR.position.set(ROAD_TOTAL_WIDTH / 2 + 0.5, 0.22, -ROAD_SEGMENT_LENGTH / 2 + 20);
+    scene.add(guardR);
 
-    // Dashed White Lane Lines
-    const laneLinesGroup = new THREE.Group();
-    const laneLineGeo = new THREE.BoxGeometry(0.18, 0.015, 3.8);
-    const laneLineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    // Dashed Lane Lines
+    const laneLines: THREE.Mesh[] = [];
+    const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const lineGeo = new THREE.BoxGeometry(0.18, 0.02, 4.2);
 
-    [-3.6, 0, 3.6].forEach(lineX => {
-      for (let z = -ROAD_LENGTH + 20; z < 20; z += 9) {
-        const lineMesh = new THREE.Mesh(laneLineGeo, laneLineMat);
-        lineMesh.position.set(lineX, 0.02, z);
-        laneLinesGroup.add(lineMesh);
+    [-3.6, 0, 3.6].forEach(lx => {
+      for (let z = -ROAD_SEGMENT_LENGTH + 20; z < 20; z += 9) {
+        const line = new THREE.Mesh(lineGeo, lineMat);
+        line.position.set(lx, 0.02, z);
+        scene.add(line);
+        laneLines.push(line);
       }
     });
-    scene.add(laneLinesGroup);
 
-    // 7. PERFORMANCE OPTIMIZATION: INSTANCED MESHES FOR ROAD PROPS
-    const lampCount = 12;
-    const poleGeo = new THREE.CylinderGeometry(0.1, 0.14, 8, 8);
-    const poleMat = new THREE.MeshStandardMaterial({ color: 0x3f3f46, metalness: 0.85, roughness: 0.2 });
-    const lampsInstancedMesh = new THREE.InstancedMesh(poleGeo, poleMat, lampCount);
-    lampsInstancedMesh.castShadow = true;
+    // 7. Scenery Props (Simple lightweight Groups with zero GPU buffer stall)
+    const sceneryItems: THREE.Group[] = [];
+    const poleMat = new THREE.MeshLambertMaterial({ color: 0x334155 });
+    const lampHeadMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
+    const treeTrunkMat = new THREE.MeshLambertMaterial({ color: 0x451a03 });
+    const treeLeafMat = new THREE.MeshLambertMaterial({ color: 0x166534 });
 
-    const lampZPositions: number[] = [];
-    const dummy = new THREE.Object3D();
+    for (let z = -ROAD_SEGMENT_LENGTH + 20; z < 20; z += 28) {
+      const propGroup = new THREE.Group();
 
-    for (let i = 0; i < lampCount; i++) {
-      const z = -ROAD_LENGTH + 20 + i * 22;
-      lampZPositions.push(z);
-      const isLeft = i % 2 === 0;
-      dummy.position.set(
-        isLeft ? -ROAD_TOTAL_WIDTH / 2 - 1.8 : ROAD_TOTAL_WIDTH / 2 + 1.8,
-        4,
-        z
-      );
-      dummy.updateMatrix();
-      lampsInstancedMesh.setMatrixAt(i, dummy.matrix);
+      // Left Lamp Post
+      const lampL = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 7, 8), poleMat);
+      lampL.position.set(-ROAD_TOTAL_WIDTH / 2 - 1.8, 3.5, 0);
+      propGroup.add(lampL);
+
+      const armL = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.12, 0.2), poleMat);
+      armL.position.set(-ROAD_TOTAL_WIDTH / 2 - 1.0, 7.0, 0);
+      propGroup.add(armL);
+
+      const bulbL = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.1, 0.2), lampHeadMat);
+      bulbL.position.set(-ROAD_TOTAL_WIDTH / 2 - 0.3, 6.9, 0);
+      propGroup.add(bulbL);
+
+      // Right Side Tree
+      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.28, 3.2, 8), treeTrunkMat);
+      trunk.position.set(ROAD_TOTAL_WIDTH / 2 + 3.8, 1.6, 0);
+      propGroup.add(trunk);
+
+      const leaves = new THREE.Mesh(new THREE.DodecahedronGeometry(1.6, 0), treeLeafMat);
+      leaves.position.set(ROAD_TOTAL_WIDTH / 2 + 3.8, 4.0, 0);
+      propGroup.add(leaves);
+
+      propGroup.position.set(0, 0, z);
+      scene.add(propGroup);
+      sceneryItems.push(propGroup);
     }
-    lampsInstancedMesh.instanceMatrix.needsUpdate = true;
-    scene.add(lampsInstancedMesh);
 
-    // Instanced Trees
-    const treeCount = 12;
-    const treeGeo = new THREE.DodecahedronGeometry(1.6, 0);
-    const treeMat = new THREE.MeshStandardMaterial({ color: 0x15803d, roughness: 0.7 });
-    const treesInstancedMesh = new THREE.InstancedMesh(treeGeo, treeMat, treeCount);
-    treesInstancedMesh.castShadow = true;
-
-    const treeZPositions: number[] = [];
-
-    for (let i = 0; i < treeCount; i++) {
-      const z = -ROAD_LENGTH + 20 + i * 22;
-      treeZPositions.push(z);
-      dummy.position.set(ROAD_TOTAL_WIDTH / 2 + 4.2, 4.0, z);
-      dummy.updateMatrix();
-      treesInstancedMesh.setMatrixAt(i, dummy.matrix);
-    }
-    treesInstancedMesh.instanceMatrix.needsUpdate = true;
-    scene.add(treesInstancedMesh);
-
-    // 8. 3D Traffic Pool
+    // 8. Traffic Pool
     const trafficPool: NPCTrafficCar[] = [];
     const carColors = [0xd97706, 0x2563eb, 0x16a34a, 0xe11d48, 0x0284c7, 0x9333ea];
 
     for (let i = 0; i < TRAFFIC_COUNT; i++) {
       const isTruck = i % 3 === 0;
       const color = carColors[i % carColors.length];
-      const { carGroup, wheels } = create3DNPCCarMesh(isTruck, color);
+      const { group: carGroup, wheels } = createTrafficCar(isTruck, color);
 
       const lane = i % LANES_COUNT;
       const x = LANE_POSITIONS[lane];
-      const z = -45 - i * 36;
+      const z = -50 - i * 42;
       carGroup.position.set(x, 0, z);
       scene.add(carGroup);
 
@@ -567,13 +479,9 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       renderer,
       playerCarGroup,
       steeringWheelGroup,
-      bonnetMesh,
       roadPlane,
-      laneLinesGroup,
-      lampsInstancedMesh,
-      treesInstancedMesh,
-      lampZPositions,
-      treeZPositions,
+      laneLines,
+      sceneryItems,
       trafficPool,
       headlightSpot
     };
@@ -599,7 +507,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
   }, []);
 
   // -------------------------------------------------------------
-  // CONTROLLER & INPUT COMMAND LISTENERS
+  // CONTROLLER COMMAND HANDLER (Direct, lag-free response)
   // -------------------------------------------------------------
   const handleControllerCommand = useCallback((cmd: any) => {
     if (!cmd) return;
@@ -635,12 +543,10 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     }
   }, [onBackToMenu]);
 
-  // Handle prop controllerCommand
   useEffect(() => {
     if (controllerCommand) handleControllerCommand(controllerCommand);
   }, [controllerCommand, handleControllerCommand]);
 
-  // Subscribe directly to controllerBus to guarantee zero dropped input commands
   useEffect(() => {
     const unsub = controllerBus.subscribe((cmd: any) => {
       handleControllerCommand(cmd);
@@ -712,7 +618,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
         car.lane = idx % LANES_COUNT;
         car.targetLane = car.lane;
         car.x = LANE_POSITIONS[car.lane];
-        car.z = -45 - idx * 36;
+        car.z = -50 - idx * 42;
         car.speedKmh = 65;
         car.targetSpeedKmh = 65;
         car.mesh.position.set(car.x, 0, car.z);
@@ -720,16 +626,38 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     }
   }, []);
 
+  // Safe respawn calculator
+  const findSafeRespawn = (pool: NPCTrafficCar[], curIdx: number) => {
+    const lanes = [0, 1, 2, 3].sort(() => Math.random() - 0.5);
+    for (const lane of lanes) {
+      const carsInLane = pool.filter((c, i) => i !== curIdx && c.targetLane === lane);
+      let minZ = -180;
+      let overlap = false;
+      for (const other of carsInLane) {
+        if (other.z < minZ) minZ = other.z;
+      }
+      const candZ = Math.min(-200, minZ - MIN_TRAFFIC_GAP_Z - Math.random() * 20);
+      for (const other of carsInLane) {
+        if (Math.abs(other.z - candZ) < MIN_TRAFFIC_GAP_Z) {
+          overlap = true;
+          break;
+        }
+      }
+      if (!overlap) return { lane, z: candZ };
+    }
+    return { lane: Math.floor(Math.random() * LANES_COUNT), z: -250 - curIdx * 25 };
+  };
+
   // -------------------------------------------------------------
-  // CONTINUOUS 60FPS FRAME LOOP (Rock Solid Dependency Free)
+  // CONTINUOUS 60FPS MAIN ANIMATION LOOP
   // -------------------------------------------------------------
   useEffect(() => {
-    let animationFrameId: number;
+    let animId: number;
     let lastTime = performance.now();
-    let hudUpdateTimer = 0;
+    let hudTimer = 0;
 
     const animate = (now: number) => {
-      animationFrameId = requestAnimationFrame(animate);
+      animId = requestAnimationFrame(animate);
       const dt = Math.min(0.05, (now - lastTime) / 1000);
       lastTime = now;
 
@@ -737,7 +665,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       const t3 = threeRef.current;
       if (!t3 || s.isPaused || s.isGameOver) return;
 
-      // 1. Acceleration Physics
+      // 1. Vehicle Acceleration & Braking
       if (s.isAccelerating) {
         s.speedKmh = Math.min(MAX_SPEED_KMH, s.speedKmh + ACCEL_RATE * dt);
       } else if (s.isBraking) {
@@ -748,73 +676,50 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
 
       const worldSpeed = (s.speedKmh / 3.6) * 0.22;
 
-      // 2. Smooth Steering Physics & Wheel Return
+      // 2. Smooth Steering Damping
       s.smoothSteer += (s.steerAngle - s.smoothSteer) * Math.min(1, dt * 8.0);
       const steerSpeed = 5.2 * (0.8 + s.speedKmh / 160);
       s.playerX += s.smoothSteer * steerSpeed * dt;
-      s.playerX = Math.max(-ROAD_TOTAL_WIDTH / 2 + 1.0, Math.min(ROAD_TOTAL_WIDTH / 2 - 1.0, s.playerX));
+      s.playerX = Math.max(-ROAD_TOTAL_WIDTH / 2 + 1.2, Math.min(ROAD_TOTAL_WIDTH / 2 - 1.2, s.playerX));
 
       t3.playerCarGroup.position.x = s.playerX;
 
-      // Rotate Steering Wheel smoothly with steering input
+      // Smooth Steering Wheel Rotation & Return
       if (t3.steeringWheelGroup) {
         t3.steeringWheelGroup.rotation.z = -s.smoothSteer * 2.2;
       }
 
-      // 3. High Beam Spotlight
+      // 3. High Beam Intensity
       if (s.highBeamTimer > 0) {
         s.highBeamTimer -= dt;
-        t3.headlightSpot.intensity = 12;
+        t3.headlightSpot.intensity = 10;
         if (s.highBeamTimer <= 0) {
           setIsHighBeaming(false);
-          t3.headlightSpot.intensity = 5;
+          t3.headlightSpot.intensity = 4;
         }
       }
 
-      // 4. Scroll Road Markings & Instanced Scenery
+      // 4. Scroll Road Lane Lines & Scenery (Direct position adjustment: NO GPU Buffer updates)
       const moveDistance = worldSpeed * dt * 25;
 
-      t3.laneLinesGroup.children.forEach(line => {
+      t3.laneLines.forEach(line => {
         line.position.z += moveDistance;
-        if (line.position.z > 20) line.position.z -= ROAD_LENGTH;
+        if (line.position.z > 20) line.position.z -= ROAD_SEGMENT_LENGTH;
       });
 
-      // Update Instanced Lamp Posts
-      const dummy = new THREE.Object3D();
-      for (let i = 0; i < t3.lampZPositions.length; i++) {
-        t3.lampZPositions[i] += moveDistance;
-        if (t3.lampZPositions[i] > 20) t3.lampZPositions[i] -= ROAD_LENGTH;
-        const isLeft = i % 2 === 0;
-        dummy.position.set(
-          isLeft ? -ROAD_TOTAL_WIDTH / 2 - 1.8 : ROAD_TOTAL_WIDTH / 2 + 1.8,
-          4,
-          t3.lampZPositions[i]
-        );
-        dummy.updateMatrix();
-        t3.lampsInstancedMesh.setMatrixAt(i, dummy.matrix);
-      }
-      t3.lampsInstancedMesh.instanceMatrix.needsUpdate = true;
+      t3.sceneryItems.forEach(prop => {
+        prop.position.z += moveDistance;
+        if (prop.position.z > 20) prop.position.z -= ROAD_SEGMENT_LENGTH;
+      });
 
-      // Update Instanced Trees
-      for (let i = 0; i < t3.treeZPositions.length; i++) {
-        t3.treeZPositions[i] += moveDistance;
-        if (t3.treeZPositions[i] > 20) t3.treeZPositions[i] -= ROAD_LENGTH;
-        dummy.position.set(ROAD_TOTAL_WIDTH / 2 + 4.2, 4.0, t3.treeZPositions[i]);
-        dummy.updateMatrix();
-        t3.treesInstancedMesh.setMatrixAt(i, dummy.matrix);
-      }
-      t3.treesInstancedMesh.instanceMatrix.needsUpdate = true;
-
-      // 5. Update NPC Traffic with Smooth Speed Interpolation & Safe Spawning
+      // 5. Update NPC Traffic with Smooth Speed Interpolation
       t3.trafficPool.forEach((car, idx) => {
-        // Smoothly interpolate traffic speed towards target speed
         car.speedKmh += (car.targetSpeedKmh - car.speedKmh) * dt * 2.0;
-
         const trafficWorldSpeed = (car.speedKmh / 3.6) * 0.22;
         const relativeSpeed = worldSpeed - trafficWorldSpeed;
         car.z += relativeSpeed * dt * 25;
 
-        // Smooth Lane Change Interpolation
+        // Smooth Lane Transition
         const targetX = LANE_POSITIONS[car.targetLane];
         if (Math.abs(car.x - targetX) > 0.05) {
           car.x += Math.sign(targetX - car.x) * dt * 3.2;
@@ -822,21 +727,20 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
           car.x = targetX;
           car.lane = car.targetLane;
         }
-
         car.mesh.position.set(car.x, 0, car.z);
 
-        // Wheel Rotation
-        car.wheels.forEach(wheel => {
-          wheel.rotation.x += trafficWorldSpeed * dt * 4;
+        // Rotate Wheels
+        car.wheels.forEach(w => {
+          w.rotation.x += trafficWorldSpeed * dt * 4;
         });
 
-        // Safe Respawn Ahead when passing behind camera
+        // Safe Respawn Ahead
         if (car.z > 25) {
-          const safePos = findSafeRespawnPosition(t3.trafficPool, idx);
-          car.lane = safePos.lane;
-          car.targetLane = safePos.lane;
-          car.x = LANE_POSITIONS[safePos.lane];
-          car.z = safePos.z;
+          const safe = findSafeRespawn(t3.trafficPool, idx);
+          car.lane = safe.lane;
+          car.targetLane = safe.lane;
+          car.x = LANE_POSITIONS[safe.lane];
+          car.z = safe.z;
           car.targetSpeedKmh = 60 + Math.random() * 35;
           car.speedKmh = car.targetSpeedKmh;
           car.mesh.position.set(car.x, 0, car.z);
@@ -846,7 +750,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
         const dx = Math.abs(car.x - s.playerX);
         const dz = Math.abs(car.z);
 
-        if (dx < 1.5 && dz < 2.2) {
+        if (dx < 1.45 && dz < 2.0) {
           s.isGameOver = true;
           setIsGameOver(true);
           sounds.playAlert();
@@ -859,7 +763,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
         }
 
         // Near Miss Bonus
-        if (dz < 1.8 && dx > 1.5 && dx < 2.6 && now - s.lastNearMissTime > 1800) {
+        if (dz < 1.8 && dx > 1.45 && dx < 2.5 && now - s.lastNearMissTime > 1800) {
           s.lastNearMissTime = now;
           s.comboMultiplier = Math.min(8, s.comboMultiplier + 1);
           s.comboTimer = 3.0;
@@ -873,10 +777,10 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       s.distanceAccKm += (worldSpeed * dt * 0.08);
       s.scoreAcc += (s.speedKmh / 10) * dt * 15 * s.comboMultiplier;
 
-      // Throttle React State HUD Updates to 6-7 times/sec (150ms) to avoid 60FPS re-render overhead
-      hudUpdateTimer += dt;
-      if (hudUpdateTimer >= 0.15) {
-        hudUpdateTimer = 0;
+      // Throttle React State Updates to avoid UI re-render stalls
+      hudTimer += dt;
+      if (hudTimer >= 0.15) {
+        hudTimer = 0;
         setCurrentSpeed(Math.round(s.speedKmh));
         setDistanceKm(parseFloat(s.distanceAccKm.toFixed(1)));
         setScore(Math.floor(s.scoreAcc));
@@ -886,16 +790,16 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       t3.renderer.render(t3.scene, t3.camera);
     };
 
-    animationFrameId = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(animationFrameId);
-  }, []); // NO highScore dependency -> Stable, non-restarting 60FPS loop!
+    animId = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(animId);
+  }, []);
 
   return (
     <div className="w-screen h-screen bg-slate-950 text-white select-none overflow-hidden relative font-sans" dir="rtl">
-      {/* 3D Canvas Container */}
+      {/* 3D WebGL Canvas */}
       <div ref={containerRef} className="w-full h-full absolute inset-0 z-0" />
 
-      {/* COCKPIT HUD OVERLAY */}
+      {/* TOP & BOTTOM HEADS-UP DISPLAY (Matching Reference Image) */}
       <div className="relative z-20 w-full h-full pointer-events-none flex flex-col justify-between p-8">
         <div className="w-full flex items-center justify-between">
           {nearMissAlert && (
@@ -911,7 +815,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
           )}
         </div>
 
-        {/* Bottom Bar: Speedometer & Distance */}
+        {/* Bottom Bar: Clean Speedometer & Controls */}
         <div className="w-full flex items-end justify-between">
           <div className="pointer-events-auto flex items-center gap-3 bg-slate-900/90 border border-slate-800 rounded-2xl px-4 py-2 text-xs text-slate-300 font-mono backdrop-blur-md">
             <span>عصا التحكم / الأسهم: توجيه</span>
@@ -925,12 +829,13 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
             </button>
           </div>
 
+          {/* Bottom Right HUD Speedometer exactly like Reference Photo */}
           <div className="flex flex-col items-end text-right font-mono pr-4 pb-2">
-            <div className="text-slate-300 text-2xl mb-1 drop-shadow">✦</div>
+            <div className="text-amber-400 text-2xl mb-1 drop-shadow">✦</div>
             <div className="text-xl font-bold tracking-wider text-slate-200 drop-shadow">
               KM: {distanceKm}
             </div>
-            <div className="text-2xl font-black tracking-widest text-white drop-shadow-md">
+            <div className="text-3xl font-black tracking-widest text-white drop-shadow-md">
               SPEED: {currentSpeed} KM/H
             </div>
           </div>
