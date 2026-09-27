@@ -1,12 +1,27 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
-import { RotateCcw, Play, Sparkles } from 'lucide-react';
+import {
+  RotateCcw,
+  Play,
+  Sparkles,
+  ChevronLeft,
+  ChevronRight,
+  Flame,
+  Sun,
+  Pause,
+  ArrowRight,
+  Compass,
+  Eye,
+  Circle
+} from 'lucide-react';
 import { sounds } from './soundFx';
+import { engineAudio } from './engineAudio';
 import { controllerBus } from '../services/controllerBus';
 
 interface SunsetHighwayGameProps {
   onBackToMenu: () => void;
   controllerCommand?: any;
+  showTouchControls?: boolean;
 }
 
 // -------------------------------------------------------------
@@ -40,7 +55,11 @@ interface NPCTrafficCar {
   isTruck: boolean;
 }
 
-export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHighwayGameProps) {
+export function SunsetHighwayGame({
+  onBackToMenu,
+  controllerCommand,
+  showTouchControls = false
+}: SunsetHighwayGameProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   // HUD States
@@ -65,8 +84,16 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     playerX: LANE_POSITIONS[1], // Start in lane 1 (-1.8)
     steerAngle: 0,
     smoothSteer: 0,
+    vehicleYaw: 0,
+    bodyRoll: 0,
+    suspensionPitch: 0,
+    cameraLookYaw: 0,
+    cameraLookPitch: 0,
+    targetCameraLookYaw: 0,
+    targetCameraLookPitch: 0,
     isAccelerating: false,
     isBraking: false,
+    isHandbraking: false,
     isHighBeamActive: false,
     highBeamTimer: 0,
     scoreAcc: 0,
@@ -75,14 +102,16 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     comboTimer: 0,
     lastNearMissTime: 0,
     isGameOver: false,
-    isPaused: false
+    isPaused: false,
+    gear: 1,
+    rpm: 950,
+    targetRpm: 950,
+    shiftTimer: 0,
+    shiftShudder: 0,
+    impactShudder: 0,
+    lastCollisionTime: 0,
+    totalCollisions: 0
   });
-
-  // Sound Synth References (Pure Engine Audio Only - NO MUSIC)
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const engineOscRef = useRef<OscillatorNode | null>(null);
-  const engineSubOscRef = useRef<OscillatorNode | null>(null);
-  const engineGainRef = useRef<GainNode | null>(null);
 
   // Three.js Scene References
   const threeRef = useRef<{
@@ -91,10 +120,12 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     renderer: THREE.WebGLRenderer;
     playerCarGroup: THREE.Group;
     steeringWheelGroup: THREE.Group;
+    frontWheelGroupL?: THREE.Group;
+    frontWheelGroupR?: THREE.Group;
+    tireMeshL?: THREE.Mesh;
+    tireMeshR?: THREE.Mesh;
     clusterTexture: THREE.CanvasTexture;
     clusterCtx: CanvasRenderingContext2D | null;
-    gpsTexture: THREE.CanvasTexture;
-    gpsCtx: CanvasRenderingContext2D | null;
     roadPlane: THREE.Mesh;
     terrainPlane: THREE.Mesh;
     laneLines: THREE.Mesh[];
@@ -105,60 +136,9 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     headlightSpotR: THREE.SpotLight;
   } | null>(null);
 
-  // -------------------------------------------------------------
-  // REALISTIC DYNAMIC ENGINE AUDIO (Pure Throttle Sound - NO MUSIC)
-  // -------------------------------------------------------------
+  // Init Engine Sound System
   const initAudio = useCallback(() => {
-    if (audioContextRef.current) return;
-    try {
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      if (!AudioCtx) return;
-      const ctx = new AudioCtx();
-      audioContextRef.current = ctx;
-
-      // Primary Engine Rumble Oscillator
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(45, ctx.currentTime);
-      gain.gain.setValueAtTime(0.04, ctx.currentTime);
-
-      const filter = ctx.createBiquadFilter();
-      filter.type = 'lowpass';
-      filter.frequency.setValueAtTime(320, ctx.currentTime);
-
-      // Secondary Deep Bass Sub-Harmonic for authentic V6/V8 car presence
-      const subOsc = ctx.createOscillator();
-      const subGain = ctx.createGain();
-      subOsc.type = 'sine';
-      subOsc.frequency.setValueAtTime(22.5, ctx.currentTime);
-      subGain.gain.setValueAtTime(0.025, ctx.currentTime);
-
-      osc.connect(filter);
-      filter.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start();
-
-      subOsc.connect(subGain);
-      subGain.connect(ctx.destination);
-      subOsc.start();
-
-      engineOscRef.current = osc;
-      engineSubOscRef.current = subOsc;
-      engineGainRef.current = gain;
-    } catch {}
-  }, []);
-
-  const updateEngineAudio = useCallback((speed: number) => {
-    if (!audioContextRef.current || !engineOscRef.current || !engineGainRef.current) return;
-    try {
-      const targetFreq = 42 + (speed / MAX_SPEED_KMH) * 85;
-      engineOscRef.current.frequency.setTargetAtTime(targetFreq, audioContextRef.current.currentTime, 0.08);
-      if (engineSubOscRef.current) {
-        engineSubOscRef.current.frequency.setTargetAtTime(targetFreq * 0.5, audioContextRef.current.currentTime, 0.08);
-      }
-      engineGainRef.current.gain.setTargetAtTime(0.035 + (speed / MAX_SPEED_KMH) * 0.04, audioContextRef.current.currentTime, 0.08);
-    } catch {}
+    engineAudio.init();
   }, []);
 
   // -------------------------------------------------------------
@@ -361,7 +341,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     playerCarGroup.add(centerMirrorGroup);
 
     // =========================================================
-    // C. PILLARS & DRIVER DOOR (قوائم ودرايش واضحة)
+    // C. PILLARS & DRIVER/PASSENGER DOORS & SEATS (أبواب ومرايا ومقاعد متكاملة يمين ويسار)
     // =========================================================
     // Left A-Pillar (قائم الزجاج الأيسر)
     const pillarL = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.15, 0.08), roofHeadlinerMat);
@@ -370,7 +350,7 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     pillarL.rotation.x = 0.22;
     playerCarGroup.add(pillarL);
 
-    // Driver Door Panel with Cognac Armrest (مسند ذراع السائق على اليسار)
+    // Left Driver Door (باب السائق الأيسر الكامل)
     const driverDoorTop = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 1.4), slateDashMat);
     driverDoorTop.position.set(-1.08, 1.44, 0.4);
     playerCarGroup.add(driverDoorTop);
@@ -379,36 +359,113 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     driverDoorSill.position.set(-1.05, 0.72, 0.35);
     playerCarGroup.add(driverDoorSill);
 
-    const armRest = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 0.45), cognacLeatherMat);
-    armRest.position.set(-0.96, 0.78, 0.32);
-    playerCarGroup.add(armRest);
+    const driverDoorPanel = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.35, 1.1), slateDashMat);
+    driverDoorPanel.position.set(-0.98, 0.68, 0.35);
+    playerCarGroup.add(driverDoorPanel);
+
+    const armRestL = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.08, 0.45), cognacLeatherMat);
+    armRestL.position.set(-0.95, 0.78, 0.32);
+    playerCarGroup.add(armRestL);
+
+    const doorHandleL = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.04, 0.14), chromeMat);
+    doorHandleL.position.set(-0.94, 0.86, 0.15);
+    playerCarGroup.add(doorHandleL);
 
     // Left Wing Mirror (مرآة السائق الجانبية على اليسار)
-    const sideMirrorGroup = new THREE.Group();
-    sideMirrorGroup.position.set(-1.18, 0.98, -0.42);
+    const sideMirrorGroupL = new THREE.Group();
+    sideMirrorGroupL.position.set(-1.18, 0.98, -0.42);
 
-    const sideMount = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.03, 0.04), slateDashMat);
-    sideMirrorGroup.add(sideMount);
+    const sideMountL = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.03, 0.04), slateDashMat);
+    sideMirrorGroupL.add(sideMountL);
 
-    const sideFrame = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.11, 0.05), sportBonnetPaintMat);
-    sideFrame.position.x = -0.06;
-    sideMirrorGroup.add(sideFrame);
+    const sideFrameL = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.11, 0.05), sportBonnetPaintMat);
+    sideFrameL.position.x = -0.06;
+    sideMirrorGroupL.add(sideFrameL);
 
-    const sideGlass = new THREE.Mesh(
+    const sideGlassL = new THREE.Mesh(
       new THREE.PlaneGeometry(0.16, 0.09),
       new THREE.MeshBasicMaterial({ color: 0x475569 })
     );
-    sideGlass.position.set(-0.06, 0, 0.026);
-    sideGlass.rotation.y = 0.32;
-    sideMirrorGroup.add(sideGlass);
-    playerCarGroup.add(sideMirrorGroup);
+    sideGlassL.position.set(-0.06, 0, 0.026);
+    sideGlassL.rotation.y = 0.32;
+    sideMirrorGroupL.add(sideGlassL);
+    playerCarGroup.add(sideMirrorGroupL);
 
-    // Right A-Pillar
+    // Right A-Pillar (قائم الزجاج الأيمن)
     const pillarR = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.15, 0.08), roofHeadlinerMat);
     pillarR.position.set(1.05, 1.08, -0.45);
     pillarR.rotation.z = 0.32;
     pillarR.rotation.x = 0.22;
     playerCarGroup.add(pillarR);
+
+    // Right Passenger Door (باب الراكب الأيمن الكامل - مكسو بالجلد ومسند يد ومقبض ومرآة جانبية)
+    const passengerDoorTop = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 1.4), slateDashMat);
+    passengerDoorTop.position.set(1.08, 1.44, 0.4);
+    playerCarGroup.add(passengerDoorTop);
+
+    const passengerDoorSill = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.55, 1.4), cognacLeatherMat);
+    passengerDoorSill.position.set(1.05, 0.72, 0.35);
+    playerCarGroup.add(passengerDoorSill);
+
+    const passengerDoorPanel = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.35, 1.1), slateDashMat);
+    passengerDoorPanel.position.set(0.98, 0.68, 0.35);
+    playerCarGroup.add(passengerDoorPanel);
+
+    const armRestR = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.08, 0.45), cognacLeatherMat);
+    armRestR.position.set(0.95, 0.78, 0.32);
+    playerCarGroup.add(armRestR);
+
+    const doorHandleR = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.04, 0.14), chromeMat);
+    doorHandleR.position.set(0.94, 0.86, 0.15);
+    playerCarGroup.add(doorHandleR);
+
+    // Right Wing Mirror (مرآة الراكب الجانبية على اليمين)
+    const sideMirrorGroupR = new THREE.Group();
+    sideMirrorGroupR.position.set(1.18, 0.98, -0.42);
+
+    const sideMountR = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.03, 0.04), slateDashMat);
+    sideMirrorGroupR.add(sideMountR);
+
+    const sideFrameR = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.11, 0.05), sportBonnetPaintMat);
+    sideFrameR.position.x = 0.06;
+    sideMirrorGroupR.add(sideFrameR);
+
+    const sideGlassR = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.16, 0.09),
+      new THREE.MeshBasicMaterial({ color: 0x475569 })
+    );
+    sideGlassR.position.set(0.06, 0, 0.026);
+    sideGlassR.rotation.y = -0.32;
+    sideMirrorGroupR.add(sideGlassR);
+    playerCarGroup.add(sideMirrorGroupR);
+
+    // Luxury Passenger Sport Seat (مقعد الراكب الرياضي الأيمن)
+    const seatBaseR = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.22, 0.60), cognacLeatherMat);
+    seatBaseR.position.set(0.52, 0.28, 0.35);
+    playerCarGroup.add(seatBaseR);
+
+    const seatBackR = new THREE.Mesh(new THREE.BoxGeometry(0.50, 0.70, 0.14), cognacLeatherMat);
+    seatBackR.position.set(0.52, 0.70, 0.62);
+    seatBackR.rotation.x = -0.15;
+    playerCarGroup.add(seatBackR);
+
+    const headRestR = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.18, 0.10), slateDashMat);
+    headRestR.position.set(0.52, 1.12, 0.70);
+    playerCarGroup.add(headRestR);
+
+    // Luxury Driver Sport Seat (مقعد السائق الرياضي الأيسر)
+    const seatBaseL = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.22, 0.60), cognacLeatherMat);
+    seatBaseL.position.set(-0.52, 0.28, 0.35);
+    playerCarGroup.add(seatBaseL);
+
+    const seatBackL = new THREE.Mesh(new THREE.BoxGeometry(0.50, 0.70, 0.14), cognacLeatherMat);
+    seatBackL.position.set(-0.52, 0.70, 0.62);
+    seatBackL.rotation.x = -0.15;
+    playerCarGroup.add(seatBackL);
+
+    const headRestL = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.18, 0.10), slateDashMat);
+    headRestL.position.set(-0.52, 1.12, 0.70);
+    playerCarGroup.add(headRestL);
 
     // =========================================================
     // D. TWO-TONE LUXURY DASHBOARD & CENTER CONSOLE
@@ -465,65 +522,58 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     playerCarGroup.add(ventR);
 
     // =========================================================
-    // E. DRIVER GAUGE CLUSTER (ON THE LEFT SIDE IN FRONT OF DRIVER)
+    // E. SLEEK COMPACT DRIVER DIGITAL SPEEDOMETER (عداد رياضي صغير وأنيق خلف الدركسون)
     // =========================================================
-    // Instrument Cowl positioned directly on the Driver side (-0.52)
-    const cowlMesh = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.24, 0.38), slateDashMat);
-    cowlMesh.position.set(-0.52, 0.82, -0.68);
+    // Compact Gauge Binnacle Housing (حاضنة العداد الرياضية المدمجة)
+    const cowlMesh = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.16, 0.20), slateDashMat);
+    cowlMesh.position.set(-0.52, 0.85, -0.56);
     cowlMesh.rotation.x = -0.15;
     playerCarGroup.add(cowlMesh);
 
+    // Sleek chrome hood trim framing the gauge
+    const cowlTrim = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.015, 0.08), chromeMat);
+    cowlTrim.position.set(-0.52, 0.93, -0.50);
+    cowlTrim.rotation.x = -0.15;
+    playerCarGroup.add(cowlTrim);
+
+    // High-Definition Canvas for Compact Digital Speed & Gear Readout
     const clusterCanvas = document.createElement('canvas');
     clusterCanvas.width = 512;
     clusterCanvas.height = 256;
     const clusterCtx = clusterCanvas.getContext('2d');
     const clusterTexture = new THREE.CanvasTexture(clusterCanvas);
     clusterTexture.minFilter = THREE.LinearFilter;
+    clusterTexture.magFilter = THREE.LinearFilter;
 
+    // Compact Digital Screen positioned naturally inside the binnacle behind steering wheel
     const clusterScreen = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.44, 0.20),
+      new THREE.PlaneGeometry(0.28, 0.13),
       new THREE.MeshBasicMaterial({ map: clusterTexture })
     );
-    clusterScreen.position.set(-0.52, 0.82, -0.60);
-    clusterScreen.rotation.x = -0.15;
+    clusterScreen.position.set(-0.52, 0.85, -0.48);
+    clusterScreen.rotation.x = -0.20;
     playerCarGroup.add(clusterScreen);
-
-    // Center Infotainment GPS Screen (To the Right of Driver)
-    const gpsCanvas = document.createElement('canvas');
-    gpsCanvas.width = 512;
-    gpsCanvas.height = 256;
-    const gpsCtx = gpsCanvas.getContext('2d');
-    const gpsTexture = new THREE.CanvasTexture(gpsCanvas);
-    gpsTexture.minFilter = THREE.LinearFilter;
-
-    const gpsHousing = new THREE.Mesh(new THREE.BoxGeometry(0.40, 0.24, 0.04), carbonMat);
-    gpsHousing.position.set(0.16, 0.74, -0.62);
-    gpsHousing.rotation.y = 0.22; // Angled gracefully toward driver
-    gpsHousing.rotation.x = -0.12;
-    playerCarGroup.add(gpsHousing);
-
-    const gpsScreen = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.37, 0.21),
-      new THREE.MeshBasicMaterial({ map: gpsTexture })
-    );
-    gpsScreen.position.set(0, 0, 0.024);
-    gpsHousing.add(gpsScreen);
 
     // =========================================================
     // F. REAL 3D STEERING WHEEL (ON THE LEFT SIDE IN FRONT OF DRIVER)
     // =========================================================
     // Steering Wheel is positioned at x = -0.52 (LEFT side of car, in front of Driver Seat!)
     const columnMesh = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.048, 0.058, 0.45, 14),
+      new THREE.CylinderGeometry(0.045, 0.055, 0.44, 14),
       slateDashMat
     );
-    columnMesh.position.set(-0.52, 0.65, -0.46);
-    columnMesh.rotation.x = Math.PI / 3.8;
+    columnMesh.position.set(-0.52, 0.62, -0.46);
+    columnMesh.rotation.x = Math.PI / 4.0;
     playerCarGroup.add(columnMesh);
 
+    // Dedicated Spindle Group for pure, authentic steering wheel spin
+    const steeringColumnGroup = new THREE.Group();
+    steeringColumnGroup.position.set(-0.52, 0.72, -0.26);
+    steeringColumnGroup.rotation.x = -0.20;
+    playerCarGroup.add(steeringColumnGroup);
+
     const steeringWheelGroup = new THREE.Group();
-    steeringWheelGroup.position.set(-0.52, 0.76, -0.26);
-    steeringWheelGroup.rotation.x = -0.22;
+    steeringColumnGroup.add(steeringWheelGroup);
 
     const rimGeo = new THREE.TorusGeometry(0.20, 0.027, 14, 30);
     const rimMat = new THREE.MeshLambertMaterial({ color: 0x1e293b });
@@ -583,10 +633,44 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     paddleR.position.set(0.16, 0.03, -0.025);
     steeringWheelGroup.add(paddleR);
 
-    playerCarGroup.add(steeringWheelGroup);
+    // =========================================================
+    // G. REALISTIC FRONT WHEELS WITH TURNING & SPINNING PHYSICS
+    // =========================================================
+    const playerWheelGeo = new THREE.CylinderGeometry(0.33, 0.33, 0.22, 16);
+    playerWheelGeo.rotateZ(Math.PI / 2);
+    const playerTireMat = new THREE.MeshLambertMaterial({ color: 0x18181b });
+    const playerRimMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.85, roughness: 0.2 });
+
+    const frontWheelGroupL = new THREE.Group();
+    frontWheelGroupL.position.set(-1.08, 0.32, -1.85);
+    const tireMeshL = new THREE.Mesh(playerWheelGeo, playerTireMat);
+    const rimMeshL = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.225, 12), playerRimMat);
+    rimMeshL.rotation.z = Math.PI / 2;
+    frontWheelGroupL.add(tireMeshL);
+    frontWheelGroupL.add(rimMeshL);
+    playerCarGroup.add(frontWheelGroupL);
+
+    const frontWheelGroupR = new THREE.Group();
+    frontWheelGroupR.position.set(1.08, 0.32, -1.85);
+    const tireMeshR = new THREE.Mesh(playerWheelGeo, playerTireMat);
+    const rimMeshR = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.225, 12), playerRimMat);
+    rimMeshR.rotation.z = Math.PI / 2;
+    frontWheelGroupR.add(tireMeshR);
+    frontWheelGroupR.add(rimMeshR);
+    playerCarGroup.add(frontWheelGroupR);
+
+    // Muscular Front Wheel Arches / Fenders framing the front turning wheels
+    const fenderGeo = new THREE.BoxGeometry(0.24, 0.16, 0.85);
+    const fenderL = new THREE.Mesh(fenderGeo, sportBonnetPaintMat);
+    fenderL.position.set(-1.08, 0.52, -1.85);
+    playerCarGroup.add(fenderL);
+
+    const fenderR = new THREE.Mesh(fenderGeo, sportBonnetPaintMat);
+    fenderR.position.set(1.08, 0.52, -1.85);
+    playerCarGroup.add(fenderR);
 
     // =========================================================
-    // G. POWERFUL DUAL HEADLIGHT SPOTLIGHTS
+    // H. POWERFUL DUAL HEADLIGHT SPOTLIGHTS
     // =========================================================
     const headlightSpotL = new THREE.SpotLight(0xfff7ed, 7, 150, Math.PI / 3.8, 0.6, 1);
     headlightSpotL.position.set(-0.7, 0.45, -1.2);
@@ -602,137 +686,130 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
 
     return {
       steeringWheelGroup,
+      frontWheelGroupL,
+      frontWheelGroupR,
+      tireMeshL,
+      tireMeshR,
       clusterTexture,
       clusterCtx,
-      gpsTexture,
-      gpsCtx,
       headlightSpotL,
       headlightSpotR
     };
   };
 
   // -------------------------------------------------------------
-  // DRAW DYNAMIC CLUSTER & GPS CANVASES
+  // DRAW COMPACT DIGITAL SPEEDOMETER & TACHOMETER GAUGE (512x256)
   // -------------------------------------------------------------
-  const updateClusterScreen = (ctx: CanvasRenderingContext2D, speed: number, distance: number) => {
+  const updateClusterScreen = (
+    ctx: CanvasRenderingContext2D,
+    speed: number,
+    distance: number,
+    gear: number = 1,
+    rpm: number = 1100
+  ) => {
     ctx.clearRect(0, 0, 512, 256);
 
-    ctx.fillStyle = '#080c14';
+    // Deep OLED Obsidian Black Background
+    ctx.fillStyle = '#030712';
     ctx.fillRect(0, 0, 512, 256);
 
-    ctx.strokeStyle = '#06b6d4';
-    ctx.lineWidth = 4;
-    ctx.strokeRect(4, 4, 504, 248);
-
-    ctx.fillStyle = '#06b6d4';
-    ctx.font = 'bold 20px monospace';
-    ctx.fillText('● CRUISE AUTO', 24, 38);
-
-    ctx.fillStyle = '#10b981';
-    ctx.fillText('SPORT [D7]', 370, 38);
-
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = 'bold 18px sans-serif';
-    ctx.fillText('SPEED', 24, 85);
-
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '900 84px monospace';
-    ctx.fillText(`${speed}`, 20, 168);
-
-    ctx.fillStyle = '#38bdf8';
-    ctx.font = 'bold 24px monospace';
-    ctx.fillText('KM/H', 185, 160);
-
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = 'bold 18px sans-serif';
-    ctx.fillText('TRIP ODO', 340, 85);
-
-    ctx.fillStyle = '#34d399';
-    ctx.font = 'bold 44px monospace';
-    ctx.fillText(`${distance}`, 330, 140);
-    ctx.font = 'bold 20px monospace';
-    ctx.fillText('KM', 445, 140);
-
-    const rpmPercent = Math.min(1.0, speed / MAX_SPEED_KMH);
-    ctx.fillStyle = '#1e293b';
-    ctx.fillRect(24, 205, 464, 18);
-
-    const grad = ctx.createLinearGradient(24, 0, 488, 0);
-    grad.addColorStop(0, '#06b6d4');
-    grad.addColorStop(0.6, '#10b981');
-    grad.addColorStop(1.0, '#f59e0b');
-    ctx.fillStyle = grad;
-    ctx.fillRect(24, 205, 464 * rpmPercent, 18);
-  };
-
-  const updateGpsScreen = (ctx: CanvasRenderingContext2D, speed: number) => {
-    ctx.clearRect(0, 0, 512, 256);
-
-    ctx.fillStyle = '#0b0f19';
-    ctx.fillRect(0, 0, 512, 256);
-
-    ctx.strokeStyle = '#1e293b';
-    ctx.lineWidth = 2;
-    for (let x = 0; x < 512; x += 60) {
+    // Subtle Grid Pattern
+    ctx.strokeStyle = '#0f172a';
+    ctx.lineWidth = 1;
+    for (let x = 20; x < 512; x += 36) {
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 256); ctx.stroke();
     }
-    for (let y = 0; y < 256; y += 45) {
+    for (let y = 20; y < 256; y += 36) {
       ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(512, y); ctx.stroke();
     }
 
-    ctx.strokeStyle = '#06b6d4';
-    ctx.lineWidth = 14;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(30, 200);
-    ctx.quadraticCurveTo(220, 160, 280, 120);
-    ctx.quadraticCurveTo(340, 80, 480, 50);
-    ctx.stroke();
-
-    ctx.strokeStyle = '#e0f2fe';
+    // Outer Sleek Neon Blue Sport Frame
+    ctx.strokeStyle = '#0284c7';
     ctx.lineWidth = 4;
-    ctx.stroke();
+    ctx.strokeRect(6, 6, 500, 244);
 
-    ctx.fillStyle = '#0284c7';
-    ctx.beginPath();
-    ctx.arc(220, 150, 12, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.strokeStyle = '#0ea5e9';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(12, 12, 488, 232);
 
+    // Top Status Header: Automatic Gear & Sport Mode
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = 'bold 20px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(`SPORT+  [ D${gear} ]`, 256, 38);
+
+    const isBeam = gameStateRef.current.highBeamTimer > 0;
+    if (isBeam) {
+      ctx.fillStyle = '#06b6d4';
+      ctx.font = 'bold 14px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText('☼ HIGH BEAM', 485, 38);
+    }
+
+    // Hero Digital Speed Readout (Big Glowing Numbers in Center)
+    ctx.shadowColor = '#38bdf8';
+    ctx.shadowBlur = 16;
     ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.arc(220, 150, 5, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
-    ctx.fillRect(16, 12, 480, 44);
-    ctx.strokeStyle = '#334155';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(16, 12, 480, 44);
+    ctx.font = '900 92px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${speed}`, 210, 136);
+    ctx.shadowBlur = 0;
 
     ctx.fillStyle = '#38bdf8';
-    ctx.font = 'bold 20px sans-serif';
-    ctx.fillText('↱ بعد 1.8 كم: مخرج طريق الساحل', 32, 42);
-
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.arc(455, 34, 18, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#dc2626';
-    ctx.lineWidth = 4;
-    ctx.stroke();
-
-    ctx.fillStyle = '#0f172a';
-    ctx.font = '900 16px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('120', 455, 40);
+    ctx.font = 'bold 24px monospace';
     ctx.textAlign = 'left';
+    ctx.fillText('KM/H', 300, 128);
 
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
-    ctx.fillRect(16, 215, 480, 32);
+    // Dynamic Engine Tachometer (RPM Bar with Colored Redline)
+    const rpmRatio = Math.max(0, Math.min(1.0, (rpm - 800) / 6200));
+    const barX = 32;
+    const barY = 165;
+    const barW = 448;
+    const barH = 16;
 
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = 'bold 15px sans-serif';
-    ctx.fillText('طريق الغروب السريع • ETA 18:45', 28, 237);
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(barX, barY, barW, barH);
+
+    const grad = ctx.createLinearGradient(barX, 0, barX + barW, 0);
+    grad.addColorStop(0, '#06b6d4');
+    grad.addColorStop(0.55, '#10b981');
+    grad.addColorStop(0.82, '#f59e0b');
+    grad.addColorStop(1.0, '#ef4444');
+    ctx.fillStyle = grad;
+    ctx.fillRect(barX, barY, barW * rpmRatio, barH);
+
+    // Tachometer Ticks for RPM
+    ctx.strokeStyle = '#030712';
+    ctx.lineWidth = 2;
+    for (let i = 1; i <= 7; i++) {
+      const tx = barX + (barW / 7) * i;
+      ctx.beginPath();
+      ctx.moveTo(tx, barY);
+      ctx.lineTo(tx, barY + barH);
+      ctx.stroke();
+    }
+
+    // RPM & Engine Telemetry
+    ctx.fillStyle = rpm > 5800 ? '#ef4444' : '#38bdf8';
+    ctx.font = 'bold 14px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${Math.round(rpm)} RPM`, 32, 204);
+
+    ctx.fillStyle = '#f59e0b';
+    ctx.font = 'bold 14px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('V8 PETROL TWIN-TURBO', 256, 204);
+
+    ctx.fillStyle = '#34d399';
+    ctx.font = 'bold 14px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(`TRIP ${distance} KM`, 480, 204);
+
+    // Bottom Telemetry Status
+    ctx.fillStyle = '#10b981';
+    ctx.font = 'bold 13px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('● SYSTEM READY · AUTO TRANSMISSION ACTIVE', 256, 232);
   };
 
   // -------------------------------------------------------------
@@ -809,18 +886,18 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
 
     const {
       steeringWheelGroup,
+      frontWheelGroupL,
+      frontWheelGroupR,
+      tireMeshL,
+      tireMeshR,
       clusterTexture,
       clusterCtx,
-      gpsTexture,
-      gpsCtx,
       headlightSpotL,
       headlightSpotR
     } = buildEnclosedLuxuryCabin(playerCarGroup, camera);
 
-    if (clusterCtx) updateClusterScreen(clusterCtx, BASE_CRUISE_SPEED, 0);
-    if (gpsCtx) updateGpsScreen(gpsCtx, BASE_CRUISE_SPEED);
+    if (clusterCtx) updateClusterScreen(clusterCtx, BASE_CRUISE_SPEED, 0, 4, 2600);
     clusterTexture.needsUpdate = true;
-    gpsTexture.needsUpdate = true;
 
     // 6. Vast Ground Terrain
     const terrainMat = new THREE.MeshLambertMaterial({
@@ -968,10 +1045,12 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       renderer,
       playerCarGroup,
       steeringWheelGroup,
+      frontWheelGroupL,
+      frontWheelGroupR,
+      tireMeshL,
+      tireMeshR,
       clusterTexture,
       clusterCtx,
-      gpsTexture,
-      gpsCtx,
       roadPlane,
       terrainPlane,
       laneLines,
@@ -994,7 +1073,6 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
 
     return () => {
       window.removeEventListener('resize', handleResize);
-      if (audioContextRef.current) audioContextRef.current.close().catch(() => {});
       renderer.dispose();
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
@@ -1015,6 +1093,59 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
     s.speedKmh = BASE_CRUISE_SPEED;
     setCurrentSpeed(BASE_CRUISE_SPEED);
   }, [initAudio]);
+
+  // Restart Game Function defined before controller handler
+  const restartGame = useCallback(() => {
+    const s = gameStateRef.current;
+    s.isWelcomeOpen = false;
+    s.speedKmh = BASE_CRUISE_SPEED;
+    s.playerX = LANE_POSITIONS[1];
+    s.steerAngle = 0;
+    s.smoothSteer = 0;
+    s.vehicleYaw = 0;
+    s.bodyRoll = 0;
+    s.suspensionPitch = 0;
+    s.isGameOver = false;
+    s.isPaused = false;
+    s.scoreAcc = 0;
+    s.distanceAccKm = 0;
+    s.comboMultiplier = 1;
+    s.gear = 4;
+    s.rpm = 2600;
+    s.targetRpm = 2600;
+    s.shiftTimer = 0;
+    s.shiftShudder = 0;
+    s.impactShudder = 0;
+    s.totalCollisions = 0;
+
+    setIsWelcomeModalOpen(false);
+    setIsGameOver(false);
+    setIsPaused(false);
+    setScore(0);
+    setDistanceKm(0);
+    setCurrentSpeed(BASE_CRUISE_SPEED);
+
+    if (threeRef.current) {
+      threeRef.current.playerCarGroup.position.x = s.playerX;
+      threeRef.current.playerCarGroup.rotation.set(0, 0, 0);
+      if (threeRef.current.steeringWheelGroup) {
+        threeRef.current.steeringWheelGroup.rotation.z = 0;
+      }
+      if (threeRef.current.frontWheelGroupL && threeRef.current.frontWheelGroupR) {
+        threeRef.current.frontWheelGroupL.rotation.y = 0;
+        threeRef.current.frontWheelGroupR.rotation.y = 0;
+      }
+      threeRef.current.trafficPool.forEach((car, idx) => {
+        car.lane = idx % LANES_COUNT;
+        car.targetLane = car.lane;
+        car.x = LANE_POSITIONS[car.lane];
+        car.z = -55 - idx * 44;
+        car.speedKmh = 48 + Math.random() * 18;
+        car.targetSpeedKmh = car.speedKmh;
+        car.mesh.position.set(car.x, 0, car.z);
+      });
+    }
+  }, []);
 
   // -------------------------------------------------------------
   // MANUAL HEADLIGHT FLASHER / STROBE (تكبيس كشافات يدوي)
@@ -1043,53 +1174,308 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
   }, [initAudio]);
 
   // -------------------------------------------------------------
-  // CONTROLLER COMMAND HANDLER
+  // PS5 DUALSENSE TOUCH CONTROLS (FOR MOBILE TOUCH PLAY)
+  // -------------------------------------------------------------
+  const [touchLeftStickPos, setTouchLeftStickPos] = useState({ x: 0, y: 0 });
+  const [touchRightStickPos, setTouchRightStickPos] = useState({ x: 0, y: 0 });
+  const [activeTouchPSButtons, setActiveTouchPSButtons] = useState<Set<string>>(new Set());
+
+  const leftStickBaseRef = useRef<HTMLDivElement>(null);
+  const leftStickPointerIdRef = useRef<number | null>(null);
+  const rightStickBaseRef = useRef<HTMLDivElement>(null);
+  const rightStickPointerIdRef = useRef<number | null>(null);
+
+  // Left Thumbstick (Steering X & Throttle/Brake Y)
+  const updateLeftStickCoords = useCallback((clientX: number, clientY: number) => {
+    if (!leftStickBaseRef.current) return;
+    const rect = leftStickBaseRef.current.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const radius = rect.width / 2;
+
+    const dx = clientX - centerX;
+    const dy = clientY - centerY;
+    const dist = Math.hypot(dx, dy);
+
+    if (dist < 4) {
+      setTouchLeftStickPos({ x: 0, y: 0 });
+      const s = gameStateRef.current;
+      s.steerAngle = 0;
+      s.isAccelerating = false;
+      s.isBraking = false;
+      return;
+    }
+
+    const angle = Math.atan2(dy, dx);
+    const power = Math.min(1.0, dist / (radius * 0.75));
+    const normX = Math.cos(angle) * power;
+    const normY = Math.sin(angle) * power;
+
+    const visualDist = Math.min(dist, radius * 0.85);
+    setTouchLeftStickPos({
+      x: (Math.cos(angle) * visualDist) / radius,
+      y: (Math.sin(angle) * visualDist) / radius
+    });
+
+    const s = gameStateRef.current;
+    if (s.isWelcomeOpen) return;
+    // Left Stick is exclusively for precise Left & Right front-wheel steering
+    s.steerAngle = Math.max(-1, Math.min(1, normX * 1.25));
+  }, []);
+
+  const handleLeftStickPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    initAudio();
+    leftStickPointerIdRef.current = e.pointerId;
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
+    updateLeftStickCoords(e.clientX, e.clientY);
+  };
+
+  const handleLeftStickPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (leftStickPointerIdRef.current !== e.pointerId) return;
+    e.preventDefault();
+    updateLeftStickCoords(e.clientX, e.clientY);
+  };
+
+  const handleLeftStickPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (leftStickPointerIdRef.current !== e.pointerId) return;
+    e.preventDefault();
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {}
+    leftStickPointerIdRef.current = null;
+    setTouchLeftStickPos({ x: 0, y: 0 });
+    const s = gameStateRef.current;
+    s.steerAngle = 0;
+  };
+
+  // Right Thumbstick (Camera Look Yaw X & Pitch Y - 360° Driver Neck Rotation)
+  const updateRightStickCoords = useCallback((clientX: number, clientY: number) => {
+    if (!rightStickBaseRef.current) return;
+    const rect = rightStickBaseRef.current.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const radius = rect.width / 2;
+
+    const dx = clientX - centerX;
+    const dy = clientY - centerY;
+    const dist = Math.hypot(dx, dy);
+
+    if (dist < 4) {
+      setTouchRightStickPos({ x: 0, y: 0 });
+      const s = gameStateRef.current;
+      s.targetCameraLookYaw = 0;
+      s.targetCameraLookPitch = 0;
+      return;
+    }
+
+    const angle = Math.atan2(dy, dx);
+    const power = Math.min(1.0, dist / (radius * 0.75));
+    const normX = Math.cos(angle) * power;
+    const normY = Math.sin(angle) * power;
+
+    const visualDist = Math.min(dist, radius * 0.85);
+    setTouchRightStickPos({
+      x: (Math.cos(angle) * visualDist) / radius,
+      y: (Math.sin(angle) * visualDist) / radius
+    });
+
+    const s = gameStateRef.current;
+    s.targetCameraLookYaw = Math.max(-0.95, Math.min(0.95, -normX * 0.95));
+    s.targetCameraLookPitch = Math.max(-0.45, Math.min(0.38, -normY * 0.45));
+  }, []);
+
+  const handleRightStickPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    initAudio();
+    rightStickPointerIdRef.current = e.pointerId;
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
+    updateRightStickCoords(e.clientX, e.clientY);
+  };
+
+  const handleRightStickPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (rightStickPointerIdRef.current !== e.pointerId) return;
+    e.preventDefault();
+    updateRightStickCoords(e.clientX, e.clientY);
+  };
+
+  const handleRightStickPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (rightStickPointerIdRef.current !== e.pointerId) return;
+    e.preventDefault();
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {}
+    rightStickPointerIdRef.current = null;
+    setTouchRightStickPos({ x: 0, y: 0 });
+    const s = gameStateRef.current;
+    s.targetCameraLookYaw = 0;
+    s.targetCameraLookPitch = 0;
+  };
+
+  // PS5 Action Buttons
+  const handlePSButtonDown = useCallback((btn: string) => {
+    initAudio();
+    sounds.playButtonPress();
+    setActiveTouchPSButtons(prev => new Set(prev).add(btn));
+    const s = gameStateRef.current;
+    if (s.isWelcomeOpen) {
+      startGameFromWelcome();
+      return;
+    }
+    if (btn === 'CROSS' || btn === 'R2') {
+      s.isAccelerating = true;
+      s.isBraking = false;
+    } else if (btn === 'SQUARE' || btn === 'L2') {
+      s.isBraking = true;
+      s.isAccelerating = false;
+    } else if (btn === 'TRIANGLE') {
+      s.isHandbraking = true;
+    } else if (btn === 'CIRCLE') {
+      sounds.playHorn();
+    } else if (btn === 'R1') {
+      triggerManualHeadlightFlash();
+    }
+  }, [initAudio, startGameFromWelcome, triggerManualHeadlightFlash]);
+
+  const handlePSButtonUp = useCallback((btn: string) => {
+    setActiveTouchPSButtons(prev => {
+      const next = new Set(prev);
+      next.delete(btn);
+      return next;
+    });
+    const s = gameStateRef.current;
+    if (btn === 'CROSS' || btn === 'R2') {
+      s.isAccelerating = false;
+    } else if (btn === 'SQUARE' || btn === 'L2') {
+      s.isBraking = false;
+    } else if (btn === 'TRIANGLE') {
+      s.isHandbraking = false;
+    }
+  }, []);
+
+  // Quick D-Pad Nudge Buttons
+  const handleTouchDpadSteer = useCallback((dir: 'left' | 'right' | null) => {
+    initAudio();
+    const s = gameStateRef.current;
+    if (s.isWelcomeOpen) return;
+    if (dir === 'left') s.steerAngle = -1;
+    else if (dir === 'right') s.steerAngle = 1;
+    else s.steerAngle = 0;
+  }, [initAudio]);
+
+  // -------------------------------------------------------------
+  // TOUCH DRAG FREE-LOOK CAMERA (PAN NECK WITH FINGER)
+  // -------------------------------------------------------------
+  const isDraggingLookRef = useRef(false);
+  const lookStartPosRef = useRef({ x: 0, y: 0 });
+
+  const handlePointerDownLook = (e: React.PointerEvent) => {
+    if ((e.target as HTMLElement).closest('button') || (e.target as HTMLElement).closest('[data-stick]')) return;
+    isDraggingLookRef.current = true;
+    lookStartPosRef.current = { x: e.clientX, y: e.clientY };
+  };
+
+  const handlePointerMoveLook = (e: React.PointerEvent) => {
+    if (!isDraggingLookRef.current) return;
+    const dx = e.clientX - lookStartPosRef.current.x;
+    const dy = e.clientY - lookStartPosRef.current.y;
+    lookStartPosRef.current = { x: e.clientX, y: e.clientY };
+
+    const s = gameStateRef.current;
+    // dx rotates neck left/right (yaw)
+    s.targetCameraLookYaw = Math.max(-0.95, Math.min(0.95, s.targetCameraLookYaw - dx * 0.005));
+    // dy tilts head up/down (pitch)
+    s.targetCameraLookPitch = Math.max(-0.45, Math.min(0.38, s.targetCameraLookPitch - dy * 0.005));
+  };
+
+  const handlePointerUpLook = () => {
+    isDraggingLookRef.current = false;
+  };
+
+  const handleResetCameraLook = useCallback(() => {
+    const s = gameStateRef.current;
+    s.targetCameraLookYaw = 0;
+    s.targetCameraLookPitch = 0;
+    setTouchRightStickPos({ x: 0, y: 0 });
+  }, []);
+
+  // -------------------------------------------------------------
+  // CONTROLLER COMMAND HANDLER (PS5 DUALSENSE & TV REMOTE SUPPORT)
   // -------------------------------------------------------------
   const handleControllerCommand = useCallback((cmd: any) => {
     if (!cmd) return;
     initAudio();
     const s = gameStateRef.current;
 
-    // If welcome modal is active: Button A / X / START / ENTER triggers "بدء"
+    // Handle 360 Camera Look around from Right Thumbstick (يمين، يسار، فوق، تحت)
+    if (cmd.type === 'camera_look' && cmd.stick) {
+      s.targetCameraLookYaw = Math.max(-0.95, Math.min(0.95, -cmd.stick.x * 0.95));
+      s.targetCameraLookPitch = Math.max(-0.45, Math.min(0.38, -cmd.stick.y * 0.45));
+      return;
+    } else if (cmd.type === 'camera_look_reset') {
+      s.targetCameraLookYaw = 0;
+      s.targetCameraLookPitch = 0;
+      return;
+    }
+
+    // If welcome modal is active: any main button triggers "بدء"
     if (s.isWelcomeOpen) {
-      if (cmd.type === 'button_down' && ['A', 'X', 'START', 'ENTER'].includes(cmd.button)) {
+      if (cmd.type === 'button_down' && ['A', 'CROSS', 'X', 'SQUARE', 'B', 'CIRCLE', 'Y', 'TRIANGLE', 'START', 'ENTER', 'R2', 'L2'].includes(cmd.button)) {
         startGameFromWelcome();
       }
       return;
     }
 
+    // Left Thumbstick: ONLY Left / Right Steering (عصا التوجيه يمين ويسار فقط)
     if (cmd.type === 'stick_move' && cmd.stick) {
       s.steerAngle = Math.max(-1, Math.min(1, cmd.stick.x * 1.15));
-      if (cmd.stick.y < -0.22) {
-        s.isAccelerating = true;
-        s.isBraking = false;
-      } else if (cmd.stick.y > 0.28) {
-        s.isBraking = true;
-        s.isAccelerating = false;
-      } else {
-        s.isAccelerating = false;
-        s.isBraking = false;
-      }
+    } else if (cmd.type === 'stick_release') {
+      s.steerAngle = 0;
     } else if (cmd.type === 'button_down') {
       if (cmd.button === 'LEFT') s.steerAngle = -1;
       if (cmd.button === 'RIGHT') s.steerAngle = 1;
-      if (['UP', 'A', 'X', 'R1', 'R2'].includes(cmd.button)) s.isAccelerating = true;
-      if (['DOWN', 'L1', 'L2'].includes(cmd.button)) s.isBraking = true;
-      if (['B', 'Y'].includes(cmd.button)) triggerManualHeadlightFlash();
-      if (cmd.button === 'START') {
+
+      // PS5 Accelerate: R2 (بنزين) + Cross (A) + Up
+      if (['R2', 'A', 'CROSS', 'UP'].includes(cmd.button)) {
+        s.isAccelerating = true;
+        s.isBraking = false;
+      }
+      // PS5 Brake / Reverse: L2 (فرامل) + Square (X) + Down
+      if (['L2', 'X', 'SQUARE', 'DOWN'].includes(cmd.button)) {
+        s.isBraking = true;
+        s.isAccelerating = false;
+      }
+      // Triangle (Y / TRIANGLE) is HANDBRAKE (جلنط / تفحيط)
+      if (['Y', 'TRIANGLE'].includes(cmd.button)) {
+        s.isHandbraking = true;
+      }
+      // High Beam Flasher: R1
+      if (['R1'].includes(cmd.button)) {
+        triggerManualHeadlightFlash();
+      }
+      // Horn: Circle (B) / L1
+      if (['B', 'CIRCLE', 'L1'].includes(cmd.button)) {
+        sounds.playHorn();
+      }
+      if (['START', 'OPTIONS'].includes(cmd.button)) {
         if (s.isGameOver) restartGame();
         else {
           s.isPaused = !s.isPaused;
           setIsPaused(s.isPaused);
         }
       }
-      if (cmd.button === 'SELECT') onBackToMenu();
+      if (['SELECT', 'SHARE', 'CREATE'].includes(cmd.button)) onBackToMenu();
     } else if (cmd.type === 'button_up') {
       if (['LEFT', 'RIGHT'].includes(cmd.button)) s.steerAngle = 0;
-      if (['UP', 'A', 'X', 'R1', 'R2'].includes(cmd.button)) s.isAccelerating = false;
-      if (['DOWN', 'L1', 'L2'].includes(cmd.button)) s.isBraking = false;
+      if (['R2', 'A', 'CROSS', 'UP'].includes(cmd.button)) s.isAccelerating = false;
+      if (['L2', 'X', 'SQUARE', 'DOWN'].includes(cmd.button)) s.isBraking = false;
+      if (['Y', 'TRIANGLE'].includes(cmd.button)) s.isHandbraking = false;
     }
-  }, [initAudio, onBackToMenu, startGameFromWelcome, triggerManualHeadlightFlash]);
+  }, [initAudio, onBackToMenu, startGameFromWelcome, triggerManualHeadlightFlash, restartGame]);
 
   useEffect(() => {
     if (controllerCommand) handleControllerCommand(controllerCommand);
@@ -1132,40 +1518,6 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       window.removeEventListener('keyup', handleKeyUp);
     };
   }, [initAudio, onBackToMenu, startGameFromWelcome, triggerManualHeadlightFlash]);
-
-  const restartGame = useCallback(() => {
-    const s = gameStateRef.current;
-    s.isWelcomeOpen = false;
-    s.speedKmh = BASE_CRUISE_SPEED;
-    s.playerX = LANE_POSITIONS[1];
-    s.steerAngle = 0;
-    s.smoothSteer = 0;
-    s.isGameOver = false;
-    s.isPaused = false;
-    s.scoreAcc = 0;
-    s.distanceAccKm = 0;
-    s.comboMultiplier = 1;
-
-    setIsWelcomeModalOpen(false);
-    setIsGameOver(false);
-    setIsPaused(false);
-    setScore(0);
-    setDistanceKm(0);
-    setCurrentSpeed(BASE_CRUISE_SPEED);
-
-    if (threeRef.current) {
-      threeRef.current.playerCarGroup.position.x = s.playerX;
-      threeRef.current.trafficPool.forEach((car, idx) => {
-        car.lane = idx % LANES_COUNT;
-        car.targetLane = car.lane;
-        car.x = LANE_POSITIONS[car.lane];
-        car.z = -55 - idx * 44;
-        car.speedKmh = 48 + Math.random() * 18;
-        car.targetSpeedKmh = car.speedKmh;
-        car.mesh.position.set(car.x, 0, car.z);
-      });
-    }
-  }, []);
 
   const findSafeRespawn = (pool: NPCTrafficCar[], curIdx: number) => {
     const lanes = [0, 1, 2, 3].sort(() => Math.random() - 0.5);
@@ -1210,9 +1562,14 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
         return;
       }
 
-      // 1. Natural Highway Speed Dynamics
-      if (s.isAccelerating) {
-        s.speedKmh = Math.min(MAX_SPEED_KMH, s.speedKmh + ACCEL_RATE * dt);
+      // 1. Natural Highway Petrol Engine Speed & Automatic Gear Dynamics
+      if (s.isHandbraking) {
+        // Handbrake deceleration with screeching rear tire grip slide
+        s.speedKmh = Math.max(MIN_SPEED_KMH, s.speedKmh - BRAKE_RATE * 1.35 * dt);
+      } else if (s.isAccelerating) {
+        // Petrol combustion torque surge
+        const gearTorqueBonus = s.gear <= 3 ? 1.25 : 1.0;
+        s.speedKmh = Math.min(MAX_SPEED_KMH, s.speedKmh + ACCEL_RATE * gearTorqueBonus * dt);
       } else if (s.isBraking) {
         s.speedKmh = Math.max(MIN_SPEED_KMH, s.speedKmh - BRAKE_RATE * dt);
       } else {
@@ -1223,22 +1580,106 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
         }
       }
 
-      updateEngineAudio(s.speedKmh);
+      // Automatic Gearbox logic (7 Gears with shift shudder & exhaust pop)
+      const gearThresholds = [0, 26, 46, 68, 88, 106, 120, 160];
+      if (s.shiftTimer > 0) {
+        s.shiftTimer -= dt;
+      }
+
+      // Automatic Upshift
+      if (s.gear < 7 && s.speedKmh > gearThresholds[s.gear] && s.shiftTimer <= 0) {
+        s.gear += 1;
+        s.shiftTimer = 0.15;
+        s.shiftShudder = 0.035;
+        engineAudio.playShiftPop();
+      }
+      // Automatic Downshift
+      else if (s.gear > 1 && s.speedKmh < gearThresholds[s.gear - 1] - 3 && s.shiftTimer <= 0) {
+        s.gear -= 1;
+        s.shiftTimer = 0.12;
+        s.shiftShudder = -0.02;
+      }
+
+      // Compute Live Engine RPM
+      const currentGearMin = gearThresholds[s.gear - 1] || 0;
+      const currentGearMax = gearThresholds[s.gear] || 140;
+      const gearProgress = Math.max(0, Math.min(1.0, (s.speedKmh - currentGearMin) / (currentGearMax - currentGearMin + 0.1)));
+
+      let baseRpm = 1200 + gearProgress * 4800;
+      if (s.isAccelerating) baseRpm += 800;
+      if (s.shiftTimer > 0) baseRpm *= 0.65; // Realistic RPM drop during shift
+      s.targetRpm = Math.max(950, Math.min(6800, baseRpm));
+      s.rpm += (s.targetRpm - s.rpm) * Math.min(1, dt * 12.0);
+
+      // Real V8 Throaty Roar and Handbrake Tire Skid Screech
+      engineAudio.update(s.rpm, s.isAccelerating, s.isBraking, s.shiftTimer > 0, s.isHandbraking, s.speedKmh);
 
       const worldSpeed = (s.speedKmh / 3.6) * 0.22;
 
-      // 2. Smooth Steering Damping & 3D Wheel Rotation
-      s.smoothSteer += (s.steerAngle - s.smoothSteer) * Math.min(1, dt * 8.0);
-      const steerSpeed = 4.2 * (0.85 + s.speedKmh / 160);
-      s.playerX += s.smoothSteer * steerSpeed * dt;
-      s.playerX = Math.max(-ROAD_TOTAL_WIDTH / 2 + 1.2, Math.min(ROAD_TOTAL_WIDTH / 2 - 1.2, s.playerX));
+      // 2. Realistic Vehicle Physics: Front-Wheel Direct Steering (Mechanical Grip & Balance)
+      const steerResponseRate = s.steerAngle !== 0 ? 12.0 : 16.0;
+      s.smoothSteer += (s.steerAngle - s.smoothSteer) * Math.min(1, dt * steerResponseRate);
 
+      // Stable, direct lane transition guided directly by front wheels
+      const laneSteerSpeed = 5.2 + (s.speedKmh / 120) * 1.4;
+      s.playerX += s.smoothSteer * laneSteerSpeed * dt;
+      s.playerX = Math.max(-ROAD_TOTAL_WIDTH / 2 + 1.2, Math.min(ROAD_TOTAL_WIDTH / 2 - 1.2, s.playerX));
       t3.playerCarGroup.position.x = s.playerX;
 
-      // Real 3D Steering Wheel Turning smoothly on LEFT side
-      if (t3.steeringWheelGroup) {
-        t3.steeringWheelGroup.rotation.z = -s.smoothSteer * 2.2;
+      // Realistic Vehicle Turning Heading (Yaw): Front wheels lead the turn naturally, rear slides during handbrake
+      const targetYaw = s.isHandbraking
+        ? -s.smoothSteer * 0.18
+        : -s.smoothSteer * 0.082;
+      s.vehicleYaw += (targetYaw - s.vehicleYaw) * Math.min(1, dt * (s.isHandbraking ? 14.0 : 9.0));
+      t3.playerCarGroup.rotation.y = s.vehicleYaw;
+
+      // Front Wheels Angular Steering & Rolling Physics (كفرات السيارة الأمامية تلف بدقة وتوجه المسار)
+      if (t3.frontWheelGroupL && t3.frontWheelGroupR) {
+        t3.frontWheelGroupL.rotation.y = s.smoothSteer * 0.52;
+        t3.frontWheelGroupR.rotation.y = s.smoothSteer * 0.52;
+        if (t3.tireMeshL && t3.tireMeshR) {
+          t3.tireMeshL.rotation.x += worldSpeed * dt * 9;
+          t3.tireMeshR.rotation.x += worldSpeed * dt * 9;
+        }
       }
+
+      // Authentic 3D Steering Wheel Turning smoothly on spindle
+      if (t3.steeringWheelGroup) {
+        t3.steeringWheelGroup.rotation.z = -s.smoothSteer * 1.75;
+      }
+
+      // Damping physical shudders
+      s.shiftShudder += (0 - s.shiftShudder) * Math.min(1, dt * 10.0);
+      s.impactShudder += (0 - s.impactShudder) * Math.min(1, dt * 8.0);
+
+      // Suspension Pitch under Acceleration, Braking, Gear Shifts, and Impacts
+      const accelSquat = s.isAccelerating ? -0.024 : 0;
+      const brakeDive = s.isBraking ? 0.038 : 0;
+      const targetPitch = accelSquat + brakeDive + s.shiftShudder + s.impactShudder;
+      s.suspensionPitch += (targetPitch - s.suspensionPitch) * Math.min(1, dt * 9.0);
+      t3.playerCarGroup.rotation.x = s.suspensionPitch;
+
+      // Subtle, planted suspension roll (mechanical grip & body weight transfer)
+      const targetRoll = -s.smoothSteer * 0.032;
+      s.bodyRoll += (targetRoll - s.bodyRoll) * Math.min(1, dt * 8.0);
+      t3.playerCarGroup.rotation.z = s.bodyRoll;
+
+      // Dynamic Driver Head & Camera Physics (Free look neck rotation + road vibe + engine tremor)
+      s.cameraLookYaw += (s.targetCameraLookYaw - s.cameraLookYaw) * Math.min(1, dt * 11.0);
+      s.cameraLookPitch += (s.targetCameraLookPitch - s.cameraLookPitch) * Math.min(1, dt * 11.0);
+
+      const roadVibe = Math.sin(now * 0.025) * (s.speedKmh / 120) * 0.0016;
+      const engineTremor = (s.rpm / 6500) * (s.isAccelerating ? 0.0012 : 0.0004) * Math.sin(now * 0.08);
+      t3.camera.position.set(
+        -0.52 + Math.sin(s.cameraLookYaw) * 0.05,
+        1.14 + roadVibe + engineTremor + Math.sin(s.cameraLookPitch) * 0.03,
+        0.42 - Math.cos(s.cameraLookYaw) * 0.015 + (s.isBraking ? -0.018 : (s.isAccelerating ? 0.012 : 0))
+      );
+      t3.camera.rotation.set(
+        -0.04 + s.cameraLookPitch + s.suspensionPitch * 0.35,
+        s.cameraLookYaw,
+        -s.bodyRoll * 0.28
+      );
 
       // 3. Headlight Intensity Check
       if (s.highBeamTimer > 0) {
@@ -1301,19 +1742,23 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
           car.mesh.position.set(car.x, 0, car.z);
         }
 
-        // Collision Check
+        // Collision Check: ZERO LOSS / NO GAME OVER (تصادمات لا متناهية بدون خسارة)
         const dx = Math.abs(car.x - s.playerX);
         const dz = Math.abs(car.z);
 
         if (dx < 1.45 && dz < 2.0) {
-          s.isGameOver = true;
-          setIsGameOver(true);
-          sounds.playAlert();
+          if (now - s.lastCollisionTime > 650) {
+            s.lastCollisionTime = now;
+            s.totalCollisions += 1;
+            s.impactShudder = 0.09;
+            s.speedKmh = Math.max(MIN_SPEED_KMH, s.speedKmh - 14);
+            sounds.playCrash();
+            setNearMissAlert(`💥 اصطدام مروري #${s.totalCollisions}! واصل القيادة بدون توقف`);
+            setTimeout(() => setNearMissAlert(null), 1400);
 
-          if (s.scoreAcc > highScoreRef.current) {
-            highScoreRef.current = Math.floor(s.scoreAcc);
-            setHighScore(highScoreRef.current);
-            localStorage.setItem('sunset_drive_3d_highscore', highScoreRef.current.toString());
+            // Displace other vehicle ahead safely
+            car.z -= 6.0;
+            car.speedKmh += 22;
           }
         }
 
@@ -1332,9 +1777,9 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
       s.distanceAccKm += (worldSpeed * dt * 0.08);
       s.scoreAcc += (s.speedKmh / 10) * dt * 15 * s.comboMultiplier;
 
-      // Update In-Car Dynamic Cockpit Screens (Throttled for zero GPU stall)
+      // Update In-Car Dynamic Cockpit Screens (Smooth 30fps dashboard refresh)
       hudTimer += dt;
-      if (hudTimer >= 0.1) {
+      if (hudTimer >= 0.033) {
         hudTimer = 0;
         const spd = Math.round(s.speedKmh);
         const dist = parseFloat(s.distanceAccKm.toFixed(1));
@@ -1344,12 +1789,8 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
         setScore(Math.floor(s.scoreAcc));
 
         if (t3.clusterCtx) {
-          updateClusterScreen(t3.clusterCtx, spd, dist);
+          updateClusterScreen(t3.clusterCtx, spd, dist, s.gear, s.rpm);
           t3.clusterTexture.needsUpdate = true;
-        }
-        if (t3.gpsCtx) {
-          updateGpsScreen(t3.gpsCtx, spd);
-          t3.gpsTexture.needsUpdate = true;
         }
       }
 
@@ -1359,12 +1800,268 @@ export function SunsetHighwayGame({ onBackToMenu, controllerCommand }: SunsetHig
 
     animId = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(animId);
-  }, [updateEngineAudio]);
+  }, []);
 
   return (
-    <div className="w-screen h-screen bg-slate-950 text-white select-none overflow-hidden relative font-sans" dir="rtl">
-      {/* 3D WebGL Canvas (Hosts Highway & Authentic Left-Drive Luxury Cockpit) */}
-      <div ref={containerRef} className="w-full h-full absolute inset-0 z-0" />
+    <div className="w-full h-full bg-slate-950 text-white select-none overflow-hidden relative font-sans" dir="rtl">
+      {/* 3D WebGL Canvas with Touch Drag Look Around (حرّك إصبعك للنظر حولك بحرية) */}
+      <div
+        ref={containerRef}
+        onPointerDown={handlePointerDownLook}
+        onPointerMove={handlePointerMoveLook}
+        onPointerUp={handlePointerUpLook}
+        onPointerCancel={handlePointerUpLook}
+        className="w-full h-full absolute inset-0 z-0 touch-none cursor-grab active:cursor-grabbing"
+      />
+
+      {/* ON-SCREEN TOUCH CONTROLS (ONLY RENDERED ON MOBILE TOUCH PLAY) */}
+      {showTouchControls && (
+        <div
+          className="absolute inset-0 z-30 pointer-events-none flex flex-col justify-between p-4 md:p-6 select-none touch-none"
+          dir="ltr"
+        >
+          {/* Top Mobile Bar: Camera Reset & Actions (Speed is displayed directly on the car's in-cabin OLED cluster) */}
+          <div className="flex items-center justify-between w-full pointer-events-auto">
+            {/* Camera Recenter Button (Speed is now displayed on in-car OLED gauge behind the wheel) */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleResetCameraLook}
+                className="flex items-center gap-1.5 bg-slate-950/85 backdrop-blur-md border border-slate-700/80 hover:border-amber-400/60 active:scale-95 px-3 py-1.5 rounded-xl text-xs font-medium text-slate-300 shadow-lg transition-all"
+                title="إعادة توجيه الكاميرا للأمام"
+              >
+                <Compass className="w-3.5 h-3.5 text-amber-400" />
+                <span>توسيط الرؤية</span>
+              </button>
+            </div>
+
+            {/* Mobile Action Controls: Pause & Back */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  initAudio();
+                  const s = gameStateRef.current;
+                  s.isPaused = !s.isPaused;
+                  setIsPaused(s.isPaused);
+                }}
+                className="p-2.5 rounded-xl bg-slate-900/85 hover:bg-slate-800 border border-slate-700/80 text-white backdrop-blur shadow-md active:scale-95"
+                title="إيقاف مؤقت"
+              >
+                <Pause className="w-4 h-4" />
+              </button>
+
+              <button
+                type="button"
+                onClick={onBackToMenu}
+                className="px-3 py-1.5 rounded-xl bg-slate-900/85 hover:bg-rose-950/70 border border-slate-700/80 hover:border-rose-500/50 text-slate-200 hover:text-rose-200 text-xs font-bold backdrop-blur shadow-md flex items-center gap-1.5 active:scale-95"
+              >
+                <span>خروج</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+
+          {/* Bottom On-Screen Mobile DualSense PS5 Driving & Camera Controls */}
+          <div className="w-full flex items-end justify-between pointer-events-auto pb-1 gap-2">
+            {/* LEFT WING: Steering Left Analog Thumbstick & Quick Direction Arrows */}
+            <div className="flex flex-col items-center gap-1.5">
+              {/* Left Stick (عصا التوجيه والحركة L3) */}
+              <div className="flex flex-col items-center">
+                <span className="text-[9px] font-bold text-slate-400 font-mono mb-0.5">
+                  عصا التوجيه (L3)
+                </span>
+                <div
+                  ref={leftStickBaseRef}
+                  data-stick="left"
+                  onPointerDown={handleLeftStickPointerDown}
+                  onPointerMove={handleLeftStickPointerMove}
+                  onPointerUp={handleLeftStickPointerUp}
+                  onPointerCancel={handleLeftStickPointerUp}
+                  className="relative w-28 h-28 md:w-32 md:h-32 rounded-full bg-gradient-to-b from-slate-900/90 to-slate-950/95 border-2 border-slate-700 shadow-2xl backdrop-blur-md flex items-center justify-center cursor-pointer touch-none select-none"
+                >
+                  <div className="w-18 h-18 rounded-full border border-slate-800 pointer-events-none" />
+                  <div
+                    className="absolute w-14 h-14 rounded-full bg-gradient-to-b from-slate-700 via-slate-800 to-slate-900 border-2 border-slate-300 shadow-xl flex items-center justify-center pointer-events-none"
+                    style={{ transform: `translate(${touchLeftStickPos.x * 26}px, ${touchLeftStickPos.y * 26}px)` }}
+                  >
+                    <div className="w-6 h-6 rounded-full bg-slate-950/90 border border-slate-600 flex items-center justify-center text-cyan-400">
+                      <Circle className="w-2.5 h-2.5 fill-current opacity-80" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Quick Nudge Arrow Buttons */}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    handleTouchDpadSteer('left');
+                  }}
+                  onPointerUp={(e) => {
+                    e.preventDefault();
+                    handleTouchDpadSteer(null);
+                  }}
+                  onPointerLeave={() => handleTouchDpadSteer(null)}
+                  onPointerCancel={() => handleTouchDpadSteer(null)}
+                  className="w-9 h-7 rounded-lg bg-slate-900/80 border border-slate-700 text-slate-300 active:bg-amber-500/40 flex items-center justify-center text-xs"
+                  aria-label="يسار"
+                >
+                  ◀
+                </button>
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    handleTouchDpadSteer('right');
+                  }}
+                  onPointerUp={(e) => {
+                    e.preventDefault();
+                    handleTouchDpadSteer(null);
+                  }}
+                  onPointerLeave={() => handleTouchDpadSteer(null)}
+                  onPointerCancel={() => handleTouchDpadSteer(null)}
+                  className="w-9 h-7 rounded-lg bg-slate-900/80 border border-slate-700 text-slate-300 active:bg-amber-500/40 flex items-center justify-center text-xs"
+                  aria-label="يمين"
+                >
+                  ▶
+                </button>
+              </div>
+            </div>
+
+            {/* RIGHT WING: PS5 Action Buttons Diamond (Top) & Right Camera Look Stick (Bottom) */}
+            <div className="flex flex-col items-center gap-1.5">
+              {/* PlayStation 5 Action Diamond: △ (Triangle/Handbrake), ▢ (Square/Brake), ○ (Circle/Horn), ✕ (Cross/Gas) */}
+              <div className="relative w-28 h-28 rounded-full bg-slate-900/60 border border-slate-800 backdrop-blur-md flex items-center justify-center touch-none select-none">
+                {/* Triangle (▲) - Handbrake (جلنط / تفحيط) */}
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    handlePSButtonDown('TRIANGLE');
+                  }}
+                  onPointerUp={(e) => {
+                    e.preventDefault();
+                    handlePSButtonUp('TRIANGLE');
+                  }}
+                  onPointerLeave={() => handlePSButtonUp('TRIANGLE')}
+                  onPointerCancel={() => handlePSButtonUp('TRIANGLE')}
+                  className={`absolute top-0 w-9 h-9 rounded-full border flex flex-col items-center justify-center font-bold transition-all shadow-md ${
+                    activeTouchPSButtons.has('TRIANGLE')
+                      ? 'bg-amber-500 border-amber-200 text-slate-950 scale-95 ring-2 ring-amber-400'
+                      : 'bg-slate-900 border-amber-500/60 text-amber-400 hover:border-amber-400'
+                  }`}
+                  title="جلنط وتفحيط [مثلث]"
+                >
+                  <span className="text-xs">▲</span>
+                  <span className="text-[7px] font-sans font-normal leading-none opacity-90">جلنط</span>
+                </button>
+
+                {/* Square (■) - Brake (فرامل) */}
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    handlePSButtonDown('SQUARE');
+                  }}
+                  onPointerUp={(e) => {
+                    e.preventDefault();
+                    handlePSButtonUp('SQUARE');
+                  }}
+                  onPointerLeave={() => handlePSButtonUp('SQUARE')}
+                  onPointerCancel={() => handlePSButtonUp('SQUARE')}
+                  className={`absolute left-0 w-9 h-9 rounded-full border flex flex-col items-center justify-center font-bold transition-all shadow-md ${
+                    activeTouchPSButtons.has('SQUARE')
+                      ? 'bg-rose-500 border-rose-200 text-white scale-95 ring-2 ring-rose-400'
+                      : 'bg-slate-900 border-rose-500/60 text-rose-400 hover:border-rose-400'
+                  }`}
+                  title="فرامل [مربع]"
+                >
+                  <span className="text-xs">■</span>
+                  <span className="text-[7px] font-sans font-normal leading-none opacity-90">فرامل</span>
+                </button>
+
+                {/* Circle (●) - Horn (بوري) */}
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    handlePSButtonDown('CIRCLE');
+                  }}
+                  onPointerUp={(e) => {
+                    e.preventDefault();
+                    handlePSButtonUp('CIRCLE');
+                  }}
+                  onPointerLeave={() => handlePSButtonUp('CIRCLE')}
+                  onPointerCancel={() => handlePSButtonUp('CIRCLE')}
+                  className={`absolute right-0 w-9 h-9 rounded-full border flex flex-col items-center justify-center font-bold transition-all shadow-md ${
+                    activeTouchPSButtons.has('CIRCLE')
+                      ? 'bg-indigo-600 border-indigo-200 text-white scale-95 ring-2 ring-indigo-400'
+                      : 'bg-slate-900 border-indigo-500/60 text-indigo-300 hover:border-indigo-400'
+                  }`}
+                  title="بوري وتنبيه [دائرة]"
+                >
+                  <span className="text-xs">●</span>
+                  <span className="text-[7px] font-sans font-normal leading-none opacity-90">بوري</span>
+                </button>
+
+                {/* Cross (✖) - Gas / Accelerate (بنزين) */}
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    handlePSButtonDown('CROSS');
+                  }}
+                  onPointerUp={(e) => {
+                    e.preventDefault();
+                    handlePSButtonUp('CROSS');
+                  }}
+                  onPointerLeave={() => handlePSButtonUp('CROSS')}
+                  onPointerCancel={() => handlePSButtonUp('CROSS')}
+                  className={`absolute bottom-0 w-9 h-9 rounded-full border-2 flex flex-col items-center justify-center font-black transition-all shadow-md ${
+                    activeTouchPSButtons.has('CROSS')
+                      ? 'bg-emerald-500 border-emerald-200 text-slate-950 scale-95 ring-2 ring-emerald-400'
+                      : 'bg-slate-900 border-emerald-500/70 text-emerald-300 hover:border-emerald-400'
+                  }`}
+                  title="بنزين وتسارع [إكس]"
+                >
+                  <span className="text-xs">✖</span>
+                  <span className="text-[7px] font-sans font-normal leading-none opacity-90">بنزين</span>
+                </button>
+              </div>
+
+              {/* Right Stick (عصا الكاميرا والرؤية R3 - يمين يسار فوق تحت) */}
+              <div className="flex flex-col items-center">
+                <span className="text-[9px] font-bold text-cyan-400 font-mono mb-0.5 flex items-center gap-1">
+                  <Eye className="w-2.5 h-2.5" />
+                  <span>عصا الكاميرا (R3)</span>
+                </span>
+                <div
+                  ref={rightStickBaseRef}
+                  data-stick="right"
+                  onPointerDown={handleRightStickPointerDown}
+                  onPointerMove={handleRightStickPointerMove}
+                  onPointerUp={handleRightStickPointerUp}
+                  onPointerCancel={handleRightStickPointerUp}
+                  className="relative w-28 h-28 md:w-32 md:h-32 rounded-full bg-gradient-to-b from-slate-900/90 to-slate-950/95 border-2 border-cyan-700/60 shadow-2xl backdrop-blur-md flex items-center justify-center cursor-pointer touch-none select-none"
+                >
+                  <div className="w-18 h-18 rounded-full border border-cyan-900/50 pointer-events-none" />
+                  <div
+                    className="absolute w-14 h-14 rounded-full bg-gradient-to-b from-slate-700 via-slate-800 to-slate-900 border-2 border-cyan-400 shadow-xl flex items-center justify-center pointer-events-none"
+                    style={{ transform: `translate(${touchRightStickPos.x * 26}px, ${touchRightStickPos.y * 26}px)` }}
+                  >
+                    <div className="w-6 h-6 rounded-full bg-slate-950/90 border border-cyan-500/70 flex items-center justify-center text-cyan-300">
+                      <Compass className="w-3 h-3" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* TOP NOTIFICATIONS (Near Miss Alert & High Beam Indicator) */}
       <div className="relative z-20 w-full h-full pointer-events-none flex flex-col justify-between p-6">
