@@ -30,7 +30,7 @@ class ControllerEventBus {
 
 export const controllerBus = new ControllerEventBus();
 
-// Bind global window hook so native Android TvPresentation can inject directly
+// Bind global window hook so native Android TvLanBridge can inject directly
 if (typeof window !== 'undefined') {
   (window as any).onTvControllerInput = (cmd: any) => {
     controllerBus.emit(cmd);

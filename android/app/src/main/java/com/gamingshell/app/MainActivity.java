@@ -6,7 +6,7 @@ import com.getcapacitor.BridgeActivity;
 public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
-        registerPlugin(ExternalDisplayPlugin.class);
+        registerPlugin(TvLanBridgePlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

@@ -57,6 +57,7 @@ export function TvPresentationView({ onExitTvMode }: TvPresentationViewProps) {
     window.addEventListener('gamingshell_control_input', handleBrowserInput);
 
     return () => {
+      tvGameSessionService.stopTvHost();
       unsubTvSession();
       unsubBus();
       window.removeEventListener('gamingshell_control_input', handleBrowserInput);
@@ -124,6 +125,11 @@ export function TvPresentationView({ onExitTvMode }: TvPresentationViewProps) {
                 <span className="text-4xl md:text-5xl font-black font-mono tracking-widest text-cyan-400 drop-shadow-[0_0_15px_rgba(34,211,238,0.5)]">
                   {tvSessionState.roomPin || '----'}
                 </span>
+                {tvSessionState.localIp && (
+                  <span className="text-[11px] font-mono text-slate-400 pt-1">
+                    شبكة Wi-Fi: <strong className="text-cyan-300">{tvSessionState.localIp}:{tvSessionState.localPort || 8765}</strong>
+                  </span>
+                )}
               </div>
 
               <p className="text-sm text-slate-300 leading-relaxed max-w-sm mx-auto">

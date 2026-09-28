@@ -5,23 +5,16 @@ import {
   Gamepad2,
   Sparkles,
   Wifi,
-  Settings,
-  X,
   Play,
-  CheckCircle,
-  AlertCircle,
   Radio,
-  RotateCcw
+  RotateCcw,
+  CheckCircle2,
+  AlertCircle
 } from 'lucide-react';
 import {
   tvGameSessionService,
   type TvSessionState
 } from '../services/tvGameSessionService';
-import {
-  getServerBaseUrl,
-  setCustomServerUrl,
-  getCustomServerUrl
-} from '../services/serverConfig';
 import { ControllerPad } from './ControllerPad';
 import { TvPresentationView } from './TvPresentationView';
 import { SunsetHighwayGame } from '../games/SunsetHighwayGame';
@@ -34,12 +27,6 @@ export function PhoneView() {
   const [activeMode, setActiveMode] = useState<ActiveViewMode>('menu');
   const [tvSessionState, setTvSessionState] = useState<TvSessionState>(() => tvGameSessionService.getState());
 
-  // Controller pairing state
-  const [manualPin, setManualPin] = useState('');
-  const [showServerSettings, setShowServerSettings] = useState(false);
-  const [customServerInput, setCustomServerInput] = useState(() => getCustomServerUrl());
-  const [activeServerUrl, setActiveServerUrl] = useState(() => getServerBaseUrl());
-
   useEffect(() => {
     // Subscribe to TV Game session state updates
     const unsub = tvGameSessionService.subscribe(state => {
@@ -48,19 +35,9 @@ export function PhoneView() {
     return () => unsub();
   }, []);
 
-  const handleConnectToTv = () => {
-    tvGameSessionService.searchAndConnectToTv(
-      'يد تحكم الجوال الذكية',
-      manualPin.trim() ? manualPin.trim() : undefined
-    );
-  };
-
-  const handleSaveServerUrl = () => {
-    setCustomServerUrl(customServerInput);
-    setActiveServerUrl(getServerBaseUrl());
-    setShowServerSettings(false);
-    // Reconnect session with new server
-    window.location.reload();
+  const handleStartTvController = () => {
+    setActiveMode('tv_controller');
+    tvGameSessionService.searchAndConnectToTv('يد تحكم الجوال الذكية');
   };
 
   // -------------------------------------------------------------
@@ -101,7 +78,7 @@ export function PhoneView() {
       <ErrorBoundary onGoHome={() => setActiveMode('menu')}>
         <div className="fixed inset-0 w-screen h-screen bg-slate-950 text-white overflow-hidden flex flex-col z-50 select-none">
           {/* Top Controller Header & Connection Bar */}
-          <div className="bg-slate-900/90 border-b border-slate-800 px-4 py-2.5 flex items-center justify-between shadow-md z-40 backdrop-blur-md">
+          <div className="bg-slate-900/95 border-b border-slate-800 px-4 py-2.5 flex items-center justify-between shadow-md z-40 backdrop-blur-md">
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -117,45 +94,33 @@ export function PhoneView() {
               <div className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono">
                 {tvSessionState.isControllerConnected ? (
                   <>
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
                     <span className="text-emerald-400 font-bold">متصل بـ: {tvSessionState.tvName}</span>
                   </>
                 ) : tvSessionState.tvStatus === 'connecting' ? (
                   <>
                     <Radio className="w-3.5 h-3.5 text-cyan-400 animate-spin" />
-                    <span className="text-cyan-300">جاري الاتصال بالتلفاز...</span>
+                    <span className="text-cyan-300">
+                      جاري الاتصال بـ {tvSessionState.selectedTv?.name || 'التلفاز'}...
+                    </span>
+                  </>
+                ) : tvSessionState.tvStatus === 'searching' ? (
+                  <>
+                    <Wifi className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
+                    <span className="text-amber-300">جاري البحث التلقائي عن التلفاز على Wi-Fi...</span>
                   </>
                 ) : (
                   <>
-                    <span className="w-2 h-2 rounded-full bg-amber-400" />
-                    <span className="text-amber-400">غير متصل بالتلفاز</span>
+                    <span className="w-2.5 h-2.5 rounded-full bg-rose-500" />
+                    <span className="text-rose-400">غير متصل بالتلفاز</span>
                   </>
                 )}
               </div>
             </div>
 
-            {/* Quick Connect / PIN Input */}
+            {/* Quick Action / Re-search */}
             <div className="flex items-center gap-2">
-              {!tvSessionState.isControllerConnected ? (
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="text"
-                    maxLength={4}
-                    placeholder="رمز PIN"
-                    value={manualPin}
-                    onChange={e => setManualPin(e.target.value.replace(/\D/g, ''))}
-                    className="w-20 px-2.5 py-1 text-center font-mono text-xs rounded-lg bg-slate-950 border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleConnectToTv}
-                    className="px-3 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold transition-all shadow-md cursor-pointer flex items-center gap-1"
-                  >
-                    <Wifi className="w-3 h-3" />
-                    <span>اتصال</span>
-                  </button>
-                </div>
-              ) : (
+              {tvSessionState.isControllerConnected ? (
                 <button
                   type="button"
                   onClick={() => tvGameSessionService.disconnectController()}
@@ -163,9 +128,45 @@ export function PhoneView() {
                 >
                   فصل
                 </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => tvGameSessionService.searchAndConnectToTv('يد تحكم الجوال الذكية')}
+                  className="px-3 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold transition-all shadow-md cursor-pointer flex items-center gap-1"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>إعادة البحث</span>
+                </button>
               )}
             </div>
           </div>
+
+          {/* Multiple Discovered TVs Selector (When multiple TV devices exist on the network) */}
+          {!tvSessionState.isControllerConnected && tvSessionState.discoveredTvs.length > 1 && (
+            <div className="bg-slate-900/90 border-b border-cyan-500/30 px-4 py-2 flex items-center gap-2 overflow-x-auto z-40" dir="rtl">
+              <span className="text-xs text-cyan-300 font-bold whitespace-nowrap">
+                اختر التلفاز المراد التحكم به:
+              </span>
+              <div className="flex items-center gap-2">
+                {tvSessionState.discoveredTvs.map(tv => (
+                  <button
+                    key={tv.id}
+                    type="button"
+                    onClick={() => tvGameSessionService.connectToDiscoveredTv(tv)}
+                    className={`px-3 py-1 rounded-lg border text-xs font-mono font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                      tvSessionState.selectedTv?.id === tv.id
+                        ? 'bg-cyan-600 border-cyan-300 text-white shadow-md'
+                        : 'bg-slate-950 border-slate-700 text-slate-300 hover:border-cyan-400'
+                    }`}
+                  >
+                    <Tv className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>{tv.name}</span>
+                    {tv.pin && <span className="text-[10px] text-amber-300">({tv.pin})</span>}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Dedicated Controller Gamepad (Zero 3D Game Rendering - Pure Controller Input) */}
           <div className="flex-1 w-full relative">
@@ -207,17 +208,12 @@ export function PhoneView() {
           </div>
         </div>
 
-        {/* Server status & settings button */}
-        <button
-          type="button"
-          onClick={() => setShowServerSettings(true)}
-          className="flex items-center gap-2 px-3.5 py-2 rounded-2xl bg-slate-900/80 hover:bg-slate-800 border border-slate-800 text-xs font-mono text-slate-300 transition-all cursor-pointer backdrop-blur shadow-md"
-          title="إعدادات الخادم والاتصال"
-        >
-          <span className={`w-2 h-2 rounded-full ${tvSessionState.wsConnected ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`} />
-          <span className="hidden sm:inline">الخادم</span>
-          <Settings className="w-3.5 h-3.5 text-slate-400" />
-        </button>
+        {/* Network Status Badge */}
+        <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-2xl bg-slate-900/80 border border-slate-800 text-xs font-mono text-slate-300 backdrop-blur shadow-md">
+          <span className="w-2 h-2 rounded-full bg-emerald-400" />
+          <span className="hidden sm:inline">شبكة Wi-Fi المحلية</span>
+          <Wifi className="w-3.5 h-3.5 text-cyan-400" />
+        </div>
       </header>
 
       {/* Main 3 Action Buttons Container */}
@@ -227,7 +223,7 @@ export function PhoneView() {
             اختر طريقة اللعب
           </h2>
           <p className="text-sm text-slate-400 max-w-md mx-auto">
-            اللعبة تعمل محلياً على التلفزيون لتفادي التعليق، أو مباشرة على الجوال.
+            التلفاز يرسم اللعبة بنفسه لتفادي التعليق، والجوال يعمل كـ Controller خفيف وسريع.
           </p>
         </div>
 
@@ -280,7 +276,7 @@ export function PhoneView() {
                 2. لعبة التلفزيون
               </h3>
               <p className="text-xs text-slate-300 leading-relaxed">
-                تحويل هذا الجهاز إلى TV Host يرسم اللعبة بنفسه على الشاشة الكبيرة، وينتظر اتصال يد التحكم من الجوال.
+                تحويل هذا الجهاز إلى TV Host يرسم اللعبة بنفسه على الشاشة، ويبدأ خادم WebSocket محلي ويعلن عبر NSD.
               </p>
             </div>
 
@@ -293,10 +289,7 @@ export function PhoneView() {
           {/* 3. TV CONTROLLER BUTTON */}
           <button
             type="button"
-            onClick={() => {
-              setActiveMode('tv_controller');
-              handleConnectToTv();
-            }}
+            onClick={handleStartTvController}
             className="group relative flex flex-col items-center justify-between p-7 rounded-3xl bg-slate-900/90 hover:bg-slate-850 border-2 border-slate-800 hover:border-rose-400/60 shadow-xl hover:shadow-2xl hover:shadow-rose-500/10 transition-all duration-300 transform hover:-translate-y-1 active:scale-95 cursor-pointer text-center overflow-hidden"
           >
             <div className="absolute top-0 right-0 w-32 h-32 bg-rose-500/10 rounded-full blur-2xl group-hover:bg-rose-500/20 transition-all" />
@@ -310,7 +303,7 @@ export function PhoneView() {
                 3. يد التلفاز
               </h3>
               <p className="text-xs text-slate-300 leading-relaxed">
-                تحويل الجوال إلى يد تحكم لاسلكية للتلفاز. الجوال لا يرسم اللعبة بل يرسل أوامر الحركة والتسارع فوراً.
+                تحويل الجوال إلى يد تحكم لاسلكية تبحث تلقائياً عن التلفاز عبر NSD/mDNS وتتصل بالـWebSocket المحلي فوراً.
               </p>
             </div>
 
@@ -325,72 +318,13 @@ export function PhoneView() {
       {/* Footer Info */}
       <footer className="relative z-10 w-full max-w-4xl mx-auto text-center border-t border-slate-800/80 pt-4 text-[11px] text-slate-300 flex flex-col sm:flex-row items-center justify-between gap-2 font-mono">
         <div>
-          <span>خادم الاتصال: </span>
-          <span className="text-cyan-400">{activeServerUrl}</span>
+          <span>الاتصال المحلي: </span>
+          <span className="text-cyan-400">Android NSD + Native WebSocket (LAN)</span>
         </div>
         <div className="text-slate-400">
-          <span>نسخة APK الموحدة (جوال / أندرويد TV) + Web TV</span>
+          <span>طريق الغروب السريع 3D · اتصال حقيقي ومباشر</span>
         </div>
       </footer>
-
-      {/* Server Configuration Modal */}
-      {showServerSettings && (
-        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-6 text-center select-none" dir="rtl">
-          <div className="max-w-md w-full bg-slate-900 border border-slate-700 rounded-3xl p-6 shadow-2xl space-y-5 text-right">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <div className="flex items-center gap-2">
-                <Settings className="w-5 h-5 text-cyan-400" />
-                <h3 className="text-base font-bold text-white">إعدادات خادم الاتصال</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowServerSettings(false)}
-                className="p-1 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-xs text-slate-300 block">
-                عنوان الخادم السحابي أو المحلي (IP/Domain):
-              </label>
-              <input
-                type="text"
-                placeholder="https://... أو http://192.168.1.50:3000"
-                value={customServerInput}
-                onChange={e => setCustomServerInput(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-xs focus:outline-none focus:border-cyan-400"
-              />
-              <p className="text-[11px] text-slate-400 leading-relaxed">
-                افتراضياً يتصل التطبيق تلقائياً بالخادم السحابي. في حال تشغيل خادم محلي على نفس الشبكة، أدخل عنوان الخادم هنا.
-              </p>
-            </div>
-
-            <div className="flex items-center gap-3 pt-2">
-              <button
-                type="button"
-                onClick={handleSaveServerUrl}
-                className="flex-1 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs shadow-lg transition-all"
-              >
-                حفظ وإعادة الاتصال
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setCustomServerInput('');
-                  setCustomServerUrl('');
-                  setActiveServerUrl(getServerBaseUrl());
-                  setShowServerSettings(false);
-                }}
-                className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-all"
-              >
-                استعادة الافتراضي
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
