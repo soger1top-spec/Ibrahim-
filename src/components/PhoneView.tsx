@@ -217,7 +217,16 @@ export function PhoneView() {
 
           <button
             type="button"
-            onClick={() => setActiveTab('tv_game')}
+            onClick={() => {
+              setActiveTab('tv_game');
+              if (typeof document !== 'undefined') {
+                try {
+                  if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+                    document.documentElement.requestFullscreen().catch(() => {});
+                  }
+                } catch {}
+              }
+            }}
             className={`flex flex-col md:flex-row items-center justify-center gap-1 py-2 px-1 text-[11px] font-semibold rounded-lg transition-all ${
               activeTab === 'tv_game'
                 ? 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow-md'
@@ -437,132 +446,13 @@ export function PhoneView() {
           </div>
         )}
 
-        {/* TAB 2: TV GAME (لعبة التلفزيون - الشاشة المستقلة للتلفاز مع البحث عن متصل) */}
+        {/* TAB 2: TV GAME (لعبة التلفزيون - شاشة التلفاز التلقائية مع البحث عن يد التحكم) */}
         {activeTab === 'tv_game' && (
-          <div className="space-y-4">
-            {/* Header info badge for TV Game */}
-            <div className="p-3.5 rounded-2xl bg-gradient-to-r from-cyan-950/40 via-blue-950/30 to-slate-900 border border-cyan-500/30 flex items-center justify-between shadow-lg">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-600 to-blue-600 border border-cyan-400/40 flex items-center justify-center text-white shrink-0 shadow-md">
-                  <Tv className="w-5 h-5" />
-                </div>
-                <div>
-                  <h2 className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <span>لعبة التلفزيون (طريق الغروب 3D)</span>
-                  </h2>
-                  <p className="text-[11px] text-slate-400">
-                    واجهة التلفزيون المستقلة · تعرض اللعبة بالكامل ويتم التحكم بها من الهاتف.
-                  </p>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setIsFullscreenTvGame(!isFullscreenTvGame)}
-                className="px-3 py-1.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-cyan-600/30 transition-all cursor-pointer"
-              >
-                <Maximize2 className="w-3.5 h-3.5" />
-                <span>{isFullscreenTvGame ? 'تصغير' : 'ملء الشاشة'}</span>
-              </button>
-            </div>
-
-            {/* TV Game Standby & Play Area */}
-            <div
-              className={`relative rounded-3xl border border-cyan-500/40 overflow-hidden shadow-2xl bg-slate-950 ${
-                isFullscreenTvGame
-                  ? 'fixed inset-0 z-50 rounded-none border-0'
-                  : 'w-full h-[620px] max-h-[75vh]'
-              }`}
-            >
-              {/* If Controller is NOT connected yet: Show Standby / Searching Screen */}
-              {!tvSessionState.isControllerConnected ? (
-                <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center bg-radial from-slate-900 via-slate-950 to-slate-950 text-white relative">
-                  {/* Glowing TV radar animation */}
-                  <div className="relative w-28 h-28 flex items-center justify-center mb-6">
-                    <div className="absolute inset-0 rounded-full bg-cyan-500/10 animate-ping" />
-                    <div className="absolute inset-2 rounded-full bg-cyan-500/20 border border-cyan-400/40 animate-pulse" />
-                    <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-cyan-600 to-blue-600 border border-cyan-300 flex items-center justify-center shadow-xl shadow-cyan-600/40 z-10">
-                      <Tv className="w-8 h-8 text-white" />
-                    </div>
-                  </div>
-
-                  <div className="space-y-3 max-w-sm">
-                    <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 text-xs font-mono font-medium">
-                      <Radio className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
-                      <span>جاري البحث عن متصل...</span>
-                    </div>
-
-                    <h2 className="text-2xl font-black text-white">
-                      الرجاء الاتصال من يد التحكم
-                    </h2>
-
-                    {/* Prominent PIN Code Badge */}
-                    <div className="p-3 bg-slate-900/90 border border-cyan-500/40 rounded-2xl flex flex-col items-center justify-center gap-1 shadow-inner">
-                      <span className="text-[10px] text-cyan-300 font-medium">رمز اقتران شاشة التلفاز</span>
-                      <span className="text-3xl font-black font-mono tracking-widest text-cyan-400">
-                        {tvSessionState.roomPin || '----'}
-                      </span>
-                    </div>
-
-                    <p className="text-xs text-slate-400 leading-relaxed">
-                      افتح التطبيق على هاتفك واضغط على تبويب <strong className="text-white">"يد التلفاز"</strong> ثم اضغط على زر <strong className="text-cyan-400">"اتصال التلفاز"</strong> للبدء فوراً.
-                    </p>
-                  </div>
-
-                  <div className="mt-8 flex flex-col gap-2.5 w-full max-w-xs">
-                    <button
-                      type="button"
-                      onClick={() => setIsFullscreenTvGame(true)}
-                      className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-cyan-600/30 transition-all cursor-pointer"
-                    >
-                      <Maximize2 className="w-4 h-4" />
-                      <span>ملء الشاشة للتلفاز (عرض كامل)</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => tvGameSessionService.forceStartTvGameDirectly()}
-                      className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 hover:text-white text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer"
-                    >
-                      <Play className="w-3.5 h-3.5 text-amber-400" />
-                      <span>بدء اللعب مباشرة على الشاشة</span>
-                    </button>
-                  </div>
-
-                  {isFullscreenTvGame && (
-                    <button
-                      type="button"
-                      onClick={() => setIsFullscreenTvGame(false)}
-                      className="absolute top-4 left-4 p-2 rounded-xl bg-slate-900/80 border border-slate-700 text-slate-300 text-xs flex items-center gap-1 hover:text-white"
-                    >
-                      <span>خروج من ملء الشاشة</span>
-                    </button>
-                  )}
-                </div>
-              ) : (
-                /* When connected: Render full 3D game without on-screen buttons (controlled by phone) */
-                <div className="w-full h-full relative">
-                  <SunsetHighwayGame
-                    showTouchControls={false}
-                    onBackToMenu={() => {
-                      setIsFullscreenTvGame(false);
-                      tvGameSessionService.disconnectController();
-                    }}
-                  />
-
-                  {/* Discrete Fullscreen Exit button in TV Mode */}
-                  {isFullscreenTvGame && (
-                    <button
-                      type="button"
-                      onClick={() => setIsFullscreenTvGame(false)}
-                      className="absolute top-4 left-4 z-40 px-3 py-1.5 rounded-xl bg-slate-950/80 border border-slate-800 hover:border-cyan-500/50 text-slate-300 hover:text-white text-xs font-medium backdrop-blur transition-all"
-                    >
-                      <span>تصغير الشاشة</span>
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
+          <div className="fixed inset-0 w-screen h-screen z-50 bg-slate-950 overflow-hidden">
+            <TvPresentationView
+              initialDisplay={connectedDisplay}
+              onExitTvMode={() => setActiveTab('connection')}
+            />
           </div>
         )}
 

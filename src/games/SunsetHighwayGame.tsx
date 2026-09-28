@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import {
   RotateCcw,
   Play,
@@ -134,6 +137,8 @@ export function SunsetHighwayGame({
     trafficPool: NPCTrafficCar[];
     headlightSpotL: THREE.SpotLight;
     headlightSpotR: THREE.SpotLight;
+    composer?: EffectComposer;
+    exhaustParticles?: THREE.Points;
   } | null>(null);
 
   // Init Engine Sound System
@@ -148,12 +153,14 @@ export function SunsetHighwayGame({
     const group = new THREE.Group();
 
     if (isTruck) {
-      const cabMat = new THREE.MeshLambertMaterial({ color: 0xf1f5f9 });
-      const boxMat = new THREE.MeshLambertMaterial({ color: 0x94a3b8 });
+      const cabMat = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.4, metalness: 0.3 });
+      const boxMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.5, metalness: 0.2 });
       const darkMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
 
       const cab = new THREE.Mesh(new THREE.BoxGeometry(2.0, 1.4, 1.6), cabMat);
       cab.position.set(0, 0.9, -1.8);
+      cab.castShadow = true;
+      cab.receiveShadow = true;
       group.add(cab);
 
       const win = new THREE.Mesh(new THREE.BoxGeometry(1.85, 0.6, 0.05), darkMat);
@@ -162,10 +169,12 @@ export function SunsetHighwayGame({
 
       const box = new THREE.Mesh(new THREE.BoxGeometry(2.2, 2.2, 4.2), boxMat);
       box.position.set(0, 1.5, 0.9);
+      box.castShadow = true;
+      box.receiveShadow = true;
       group.add(box);
 
-      // Tail lights
-      const tlMat = new THREE.MeshBasicMaterial({ color: 0xff1e1e });
+      // Tail lights with emissive glow
+      const tlMat = new THREE.MeshStandardMaterial({ color: 0xff1e1e, emissive: 0xff0000, emissiveIntensity: 2.2 });
       const tlL = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.2, 0.05), tlMat);
       tlL.position.set(-0.85, 0.8, 3.02);
       group.add(tlL);
@@ -174,23 +183,29 @@ export function SunsetHighwayGame({
       tlR.position.set(0.85, 0.8, 3.02);
       group.add(tlR);
     } else {
-      const bodyMat = new THREE.MeshStandardMaterial({
+      const bodyMat = new THREE.MeshPhysicalMaterial({
         color: colorHex,
-        roughness: 0.3,
-        metalness: 0.6
+        roughness: 0.18,
+        metalness: 0.82,
+        clearcoat: 1.0,
+        clearcoatRoughness: 0.1
       });
-      const glassMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
+      const glassMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.1, metalness: 0.9 });
 
       const body = new THREE.Mesh(new THREE.BoxGeometry(1.85, 0.7, 4.0), bodyMat);
       body.position.y = 0.55;
+      body.castShadow = true;
+      body.receiveShadow = true;
       group.add(body);
 
       const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.6, 2.1), glassMat);
       cabin.position.set(0, 1.1, -0.2);
+      cabin.castShadow = true;
+      cabin.receiveShadow = true;
       group.add(cabin);
 
       // Tail lights
-      const tlMat = new THREE.MeshBasicMaterial({ color: 0xff1e1e });
+      const tlMat = new THREE.MeshStandardMaterial({ color: 0xff1e1e, emissive: 0xff0000, emissiveIntensity: 2.5 });
       const tlL = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.16, 0.05), tlMat);
       tlL.position.set(-0.65, 0.65, 2.02);
       group.add(tlL);
@@ -249,16 +264,19 @@ export function SunsetHighwayGame({
     playerCarGroup.add(cabinDashGlow);
 
     // Luxury Material Palette: Distinct, Vivid, and Rich (NEVER blends into the asphalt!)
-    const sportBonnetPaintMat = new THREE.MeshStandardMaterial({
+    const sportBonnetPaintMat = new THREE.MeshPhysicalMaterial({
       color: 0xdc2626, // Brilliant Rosso Corsa / Metallic Crimson Sport Red!
-      roughness: 0.25,
-      metalness: 0.72
+      roughness: 0.12,
+      metalness: 0.88,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.05,
+      envMapIntensity: 1.5
     });
-    const slateDashMat = new THREE.MeshLambertMaterial({ color: 0x334155 }); // Slate Anthracite Upper Dash
-    const cognacLeatherMat = new THREE.MeshLambertMaterial({ color: 0xc27837 }); // Warm Cognac / Saddle Tan Leather
-    const chromeMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.15, metalness: 0.9 });
-    const carbonMat = new THREE.MeshLambertMaterial({ color: 0x1e293b }); // Center Console Carbon
-    const roofHeadlinerMat = new THREE.MeshLambertMaterial({ color: 0x475569 }); // Slate Gray Headliner
+    const slateDashMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.6, metalness: 0.1 }); // Slate Anthracite Upper Dash
+    const cognacLeatherMat = new THREE.MeshStandardMaterial({ color: 0xc27837, roughness: 0.5, metalness: 0.1 }); // Warm Cognac / Saddle Tan Leather
+    const chromeMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.12, metalness: 0.95 });
+    const carbonMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.4, metalness: 0.5 }); // Center Console Carbon
+    const roofHeadlinerMat = new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.8, metalness: 0.05 }); // Slate Gray Headliner
 
     // =========================================================
     // A. VIVID METALLIC SPORT HOOD (الكبوت الرياضي الفخم - واضح ومتميز عن الشارع)
@@ -269,6 +287,8 @@ export function SunsetHighwayGame({
     );
     bonnetMesh.position.set(0, 0.52, -1.75);
     bonnetMesh.rotation.x = -0.06;
+    bonnetMesh.castShadow = true;
+    bonnetMesh.receiveShadow = true;
     playerCarGroup.add(bonnetMesh);
 
     // Aerodynamic Power Bulges / Ridges on the hood
@@ -820,6 +840,7 @@ export function SunsetHighwayGame({
     const container = containerRef.current;
     const width = container.clientWidth || window.innerWidth;
     const height = container.clientHeight || window.innerHeight;
+    const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent);
 
     // 1. Scene & Sunset Sky Atmosphere
     const scene = new THREE.Scene();
@@ -850,29 +871,42 @@ export function SunsetHighwayGame({
     }
     const skyTexture = new THREE.CanvasTexture(skyCanvas);
     scene.background = skyTexture;
-    scene.fog = new THREE.FogExp2(0x581c87, 0.0055);
+    scene.fog = new THREE.FogExp2(0x581c87, 0.0050);
 
     // 2. Camera Setup (Driver POV with Wide Forward Highway Framing)
     const camera = new THREE.PerspectiveCamera(66, width / height, 0.1, 320);
 
-    // 3. Renderer with Smart Performance Options
+    // 3. Renderer with Smart Performance Options & PCFSoftShadowMap
     const renderer = new THREE.WebGLRenderer({
       antialias: true,
       powerPreference: 'high-performance'
     });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobile ? 1.5 : 2.0));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.15;
     container.appendChild(renderer.domElement);
 
-    // 4. Lighting
-    const sunLight = new THREE.DirectionalLight(0xffa254, 2.4);
-    sunLight.position.set(60, 25, -90);
+    // 4. Enhanced Lighting & Soft Directional Sunlight
+    const sunLight = new THREE.DirectionalLight(0xffa254, 2.6);
+    sunLight.position.set(60, 45, -90);
+    sunLight.castShadow = true;
+    sunLight.shadow.mapSize.width = isMobile ? 1024 : 2048;
+    sunLight.shadow.mapSize.height = isMobile ? 1024 : 2048;
+    sunLight.shadow.camera.left = -60;
+    sunLight.shadow.camera.right = 60;
+    sunLight.shadow.camera.top = 60;
+    sunLight.shadow.camera.bottom = -60;
+    sunLight.shadow.camera.near = 1;
+    sunLight.shadow.camera.far = 300;
+    sunLight.shadow.bias = -0.0001;
+    sunLight.shadow.normalBias = 0.02;
     scene.add(sunLight);
 
-    const ambientLight = new THREE.AmbientLight(0x6366f1, 0.75);
-    scene.add(ambientLight);
+    const hemiLight = new THREE.HemisphereLight(0x87ceeb, 0x331a00, 0.85);
+    scene.add(hemiLight);
 
     const sunGlowMat = new THREE.MeshBasicMaterial({ color: 0xffedd5 });
     const sunGlow = new THREE.Mesh(new THREE.CircleGeometry(16, 32), sunGlowMat);
@@ -899,9 +933,34 @@ export function SunsetHighwayGame({
     if (clusterCtx) updateClusterScreen(clusterCtx, BASE_CRUISE_SPEED, 0, 4, 2600);
     clusterTexture.needsUpdate = true;
 
+    // Exhaust Smoke Particles for Player Car
+    const particleCount = 35;
+    const particleGeo = new THREE.BufferGeometry();
+    const particlePos = new Float32Array(particleCount * 3);
+    const particleAges = new Float32Array(particleCount);
+
+    for (let i = 0; i < particleCount; i++) {
+      particlePos[i * 3] = (Math.random() - 0.5) * 0.35;
+      particlePos[i * 3 + 1] = 0.2;
+      particlePos[i * 3 + 2] = 1.8 + Math.random() * 1.5;
+      particleAges[i] = Math.random() * 1.5;
+    }
+    particleGeo.setAttribute('position', new THREE.BufferAttribute(particlePos, 3));
+    const particleMat = new THREE.PointsMaterial({
+      color: 0x94a3b8,
+      size: 0.22,
+      transparent: true,
+      opacity: 0.30,
+      depthWrite: false
+    });
+    const exhaustParticles = new THREE.Points(particleGeo, particleMat);
+    playerCarGroup.add(exhaustParticles);
+
     // 6. Vast Ground Terrain
-    const terrainMat = new THREE.MeshLambertMaterial({
-      color: 0x0f172a
+    const terrainMat = new THREE.MeshStandardMaterial({
+      color: 0x0f172a,
+      roughness: 0.85,
+      metalness: 0.05
     });
     const terrainPlane = new THREE.Mesh(
       new THREE.PlaneGeometry(600, ROAD_SEGMENT_LENGTH),
@@ -909,11 +968,14 @@ export function SunsetHighwayGame({
     );
     terrainPlane.rotation.x = -Math.PI / 2;
     terrainPlane.position.set(0, -0.04, -ROAD_SEGMENT_LENGTH / 2 + 20);
+    terrainPlane.receiveShadow = true;
     scene.add(terrainPlane);
 
     // 7. Matte Dark Asphalt Highway (Contrast beautifully with crimson sports hood!)
-    const roadMat = new THREE.MeshLambertMaterial({
-      color: 0x11161f
+    const roadMat = new THREE.MeshStandardMaterial({
+      color: 0x181e29,
+      roughness: 0.65,
+      metalness: 0.08
     });
     const roadPlane = new THREE.Mesh(
       new THREE.PlaneGeometry(ROAD_TOTAL_WIDTH + 4, ROAD_SEGMENT_LENGTH),
@@ -921,18 +983,23 @@ export function SunsetHighwayGame({
     );
     roadPlane.rotation.x = -Math.PI / 2;
     roadPlane.position.set(0, 0, -ROAD_SEGMENT_LENGTH / 2 + 20);
+    roadPlane.receiveShadow = true;
     scene.add(roadPlane);
 
     // Guardrails Left and Right
-    const guardMat = new THREE.MeshLambertMaterial({ color: 0x475569 });
+    const guardMat = new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.3, metalness: 0.7 });
     const guardGeo = new THREE.BoxGeometry(0.45, 0.5, ROAD_SEGMENT_LENGTH);
 
     const guardL = new THREE.Mesh(guardGeo, guardMat);
     guardL.position.set(-ROAD_TOTAL_WIDTH / 2 - 1.2, 0.25, -ROAD_SEGMENT_LENGTH / 2 + 20);
+    guardL.castShadow = true;
+    guardL.receiveShadow = true;
     scene.add(guardL);
 
     const guardR = new THREE.Mesh(guardGeo, guardMat);
     guardR.position.set(ROAD_TOTAL_WIDTH / 2 + 1.2, 0.25, -ROAD_SEGMENT_LENGTH / 2 + 20);
+    guardR.castShadow = true;
+    guardR.receiveShadow = true;
     scene.add(guardR);
 
     // Solid Edge Lines (Vivid Amber Gold)
@@ -975,34 +1042,46 @@ export function SunsetHighwayGame({
       }
     });
 
-    // 9. Scenery Props (Smoothly scrolling poles & roadside greenery)
+    // 9. Scenery Props (Smoothly scrolling poles & roadside greenery with Street Lights)
     const sceneryItems: THREE.Group[] = [];
-    const poleMat = new THREE.MeshLambertMaterial({ color: 0x1e293b });
-    const lampHeadMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
-    const treeTrunkMat = new THREE.MeshLambertMaterial({ color: 0x27170a });
-    const treeLeafMat = new THREE.MeshLambertMaterial({ color: 0x14532d });
+    const poleMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.4, metalness: 0.6 });
+    const lampHeadMat = new THREE.MeshStandardMaterial({ color: 0xfef08a, emissive: 0xfef08a, emissiveIntensity: 2.0 });
+    const treeTrunkMat = new THREE.MeshStandardMaterial({ color: 0x27170a, roughness: 0.8, metalness: 0.1 });
+    const treeLeafMat = new THREE.MeshStandardMaterial({ color: 0x14532d, roughness: 0.7, metalness: 0.1 });
 
+    let poleIndex = 0;
     for (let z = -ROAD_SEGMENT_LENGTH + 20; z < 20; z += 30) {
+      poleIndex++;
       const propGroup = new THREE.Group();
 
       const lampL = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 7.5, 8), poleMat);
       lampL.position.set(-ROAD_TOTAL_WIDTH / 2 - 2.8, 3.75, 0);
+      lampL.castShadow = true;
       propGroup.add(lampL);
 
       const armL = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.12, 0.2), poleMat);
       armL.position.set(-ROAD_TOTAL_WIDTH / 2 - 2.0, 7.4, 0);
+      armL.castShadow = true;
       propGroup.add(armL);
 
       const bulbL = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.1, 0.2), lampHeadMat);
       bulbL.position.set(-ROAD_TOTAL_WIDTH / 2 - 1.3, 7.3, 0);
       propGroup.add(bulbL);
 
+      if (poleIndex % 2 === 0) {
+        const streetPointLight = new THREE.PointLight(0xffc87c, 1.2, 25);
+        streetPointLight.position.set(-ROAD_TOTAL_WIDTH / 2 - 1.3, 7.1, 0);
+        propGroup.add(streetPointLight);
+      }
+
       const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.32, 3.2, 8), treeTrunkMat);
       trunk.position.set(ROAD_TOTAL_WIDTH / 2 + 5.0, 1.6, 0);
+      trunk.castShadow = true;
       propGroup.add(trunk);
 
       const leaves = new THREE.Mesh(new THREE.DodecahedronGeometry(1.7, 0), treeLeafMat);
       leaves.position.set(ROAD_TOTAL_WIDTH / 2 + 5.0, 4.2, 0);
+      leaves.castShadow = true;
       propGroup.add(leaves);
 
       propGroup.position.set(0, 0, z);
@@ -1039,6 +1118,19 @@ export function SunsetHighwayGame({
       });
     }
 
+    // 11. Post-Processing EffectComposer with UnrealBloomPass
+    const composer = new EffectComposer(renderer);
+    const renderPass = new RenderPass(scene, camera);
+    composer.addPass(renderPass);
+
+    const bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(width, height),
+      0.26,
+      0.32,
+      0.88
+    );
+    composer.addPass(bloomPass);
+
     threeRef.current = {
       scene,
       camera,
@@ -1058,7 +1150,9 @@ export function SunsetHighwayGame({
       sceneryItems,
       trafficPool,
       headlightSpotL,
-      headlightSpotR
+      headlightSpotR,
+      composer,
+      exhaustParticles
     };
 
     const handleResize = () => {
@@ -1068,6 +1162,9 @@ export function SunsetHighwayGame({
       threeRef.current.camera.aspect = w / h;
       threeRef.current.camera.updateProjectionMatrix();
       threeRef.current.renderer.setSize(w, h);
+      if (threeRef.current.composer) {
+        threeRef.current.composer.setSize(w, h);
+      }
     };
     window.addEventListener('resize', handleResize);
 
@@ -1794,8 +1891,29 @@ export function SunsetHighwayGame({
         }
       }
 
-      // Render 3D Scene
-      t3.renderer.render(t3.scene, t3.camera);
+      // Update exhaust smoke particles
+      if (t3.exhaustParticles) {
+        const positions = t3.exhaustParticles.geometry.attributes.position.array as Float32Array;
+        const pCount = 35;
+        for (let j = 0; j < pCount; j++) {
+          const idx = j * 3;
+          positions[idx + 1] += 0.25 * dt;
+          positions[idx + 2] += 2.4 * dt;
+          if (positions[idx + 2] > 5.0) {
+            positions[idx] = (Math.random() - 0.5) * 0.35;
+            positions[idx + 1] = 0.2;
+            positions[idx + 2] = 1.8 + Math.random() * 0.5;
+          }
+        }
+        t3.exhaustParticles.geometry.attributes.position.needsUpdate = true;
+      }
+
+      // Render 3D Scene with Post-Processing Bloom
+      if (t3.composer) {
+        t3.composer.render();
+      } else {
+        t3.renderer.render(t3.scene, t3.camera);
+      }
     };
 
     animId = requestAnimationFrame(animate);
@@ -2079,20 +2197,22 @@ export function SunsetHighwayGame({
             )}
           </div>
 
-          {/* Minimal High Score & Clean Exit Badge */}
+          {/* Minimal High Score & Clean Exit Badge (Only on Touch/Mobile screen) */}
           <div className="flex items-center gap-3 pointer-events-auto">
             <div className="bg-slate-950/80 border border-slate-800 rounded-2xl px-3.5 py-1.5 text-right font-mono backdrop-blur-md">
               <span className="text-[10px] text-slate-400 block">أعلى سكور</span>
               <span className="text-xs font-bold text-amber-400">{highScore}</span>
             </div>
 
-            <button
-              type="button"
-              onClick={onBackToMenu}
-              className="px-3.5 py-1.5 rounded-2xl bg-slate-900/80 hover:bg-rose-900/80 border border-slate-800 hover:border-rose-500/60 text-slate-300 hover:text-rose-200 font-bold text-xs transition-colors backdrop-blur-md shadow-lg"
-            >
-              خروج [SELECT]
-            </button>
+            {showTouchControls && (
+              <button
+                type="button"
+                onClick={onBackToMenu}
+                className="px-3.5 py-1.5 rounded-2xl bg-slate-900/80 hover:bg-rose-900/80 border border-slate-800 hover:border-rose-500/60 text-slate-300 hover:text-rose-200 font-bold text-xs transition-colors backdrop-blur-md shadow-lg"
+              >
+                خروج [SELECT]
+              </button>
+            )}
           </div>
         </div>
 
