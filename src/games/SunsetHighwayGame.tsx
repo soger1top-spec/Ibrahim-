@@ -15,11 +15,19 @@ import {
   ArrowRight,
   Compass,
   Eye,
-  Circle
+  Circle,
+  Camera
 } from 'lucide-react';
 import { sounds } from './soundFx';
 import { engineAudio } from './engineAudio';
 import { controllerBus } from '../services/controllerBus';
+import {
+  preloadCarKitModels,
+  createCarKitVehicle,
+  createPlayerCarKitVehicle,
+  TRAFFIC_VARIETIES,
+  VEHICLE_MODELS
+} from './carKitModels';
 
 interface SunsetHighwayGameProps {
   onBackToMenu: () => void;
@@ -51,7 +59,11 @@ const MIN_TRAFFIC_GAP_Z = 45;
 
 interface NPCTrafficCar {
   mesh: THREE.Group;
-  wheels: THREE.Mesh[];
+  wheels: THREE.Object3D[];
+  frontWheels: THREE.Object3D[];
+  flasherLights?: THREE.Mesh[];
+  tailLights?: THREE.Mesh[];
+  headLights?: THREE.Mesh[];
   x: number;
   z: number;
   lane: number;
@@ -59,6 +71,8 @@ interface NPCTrafficCar {
   speedKmh: number;
   targetSpeedKmh: number;
   isTruck: boolean;
+  isEmergency?: boolean;
+  modelName?: string;
 }
 
 export function SunsetHighwayGame({
@@ -75,6 +89,7 @@ export function SunsetHighwayGame({
   const [isWelcomeModalOpen, setIsWelcomeModalOpen] = useState(!autoStart);
   const [isGameOver, setIsGameOver] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const [cameraMode, setCameraMode] = useState<'cockpit' | 'chase' | 'hood'>('cockpit');
   const [score, setScore] = useState(0);
   const [highScore, setHighScore] = useState(() => {
     return parseInt(localStorage.getItem('sunset_drive_3d_highscore') || '0', 10);
@@ -105,6 +120,7 @@ export function SunsetHighwayGame({
     vehicleYaw: 0,
     bodyRoll: 0,
     suspensionPitch: 0,
+    cameraMode: 'cockpit' as 'cockpit' | 'chase' | 'hood',
     cameraLookYaw: 0,
     cameraLookPitch: 0,
     targetCameraLookYaw: 0,
@@ -142,6 +158,8 @@ export function SunsetHighwayGame({
     frontWheelGroupR?: THREE.Group;
     tireMeshL?: THREE.Mesh;
     tireMeshR?: THREE.Mesh;
+    playerCarWheels?: THREE.Object3D[];
+    playerCarFrontWheels?: THREE.Object3D[];
     clusterTexture: THREE.CanvasTexture;
     clusterCtx: CanvasRenderingContext2D | null;
     roadPlane: THREE.Mesh;
@@ -162,100 +180,25 @@ export function SunsetHighwayGame({
   }, []);
 
   // -------------------------------------------------------------
-  // BUILD 3D TRAFFIC VEHICLES WITH REALISTIC COLORS & CONTACT SHADOWS
+  // BUILD 3D TRAFFIC VEHICLES USING HIGH-FIDELITY KENNEY CAR KIT
   // -------------------------------------------------------------
-  const createTrafficCar = (isTruck: boolean, colorHex: number) => {
-    const group = new THREE.Group();
+  const createTrafficCar = (index: number) => {
+    const variety = TRAFFIC_VARIETIES[index % TRAFFIC_VARIETIES.length];
+    const isTruck = variety.model.includes('truck') || variety.model.includes('delivery') || variety.model.includes('firetruck');
+    const scale = isTruck ? 1.35 : 1.42;
+    const vehicle = createCarKitVehicle(variety.model, scale);
 
-    if (isTruck) {
-      const cabMat = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.4, metalness: 0.3 });
-      const boxMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.5, metalness: 0.2 });
-      const darkMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
-
-      const cab = new THREE.Mesh(new THREE.BoxGeometry(2.0, 1.4, 1.6), cabMat);
-      cab.position.set(0, 0.9, -1.8);
-      cab.castShadow = true;
-      cab.receiveShadow = true;
-      group.add(cab);
-
-      const win = new THREE.Mesh(new THREE.BoxGeometry(1.85, 0.6, 0.05), darkMat);
-      win.position.set(0, 1.15, -2.62);
-      group.add(win);
-
-      const box = new THREE.Mesh(new THREE.BoxGeometry(2.2, 2.2, 4.2), boxMat);
-      box.position.set(0, 1.5, 0.9);
-      box.castShadow = true;
-      box.receiveShadow = true;
-      group.add(box);
-
-      // Tail lights with emissive glow
-      const tlMat = new THREE.MeshStandardMaterial({ color: 0xff1e1e, emissive: 0xff0000, emissiveIntensity: 2.2 });
-      const tlL = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.2, 0.05), tlMat);
-      tlL.position.set(-0.85, 0.8, 3.02);
-      group.add(tlL);
-
-      const tlR = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.2, 0.05), tlMat);
-      tlR.position.set(0.85, 0.8, 3.02);
-      group.add(tlR);
-    } else {
-      const bodyMat = new THREE.MeshPhysicalMaterial({
-        color: colorHex,
-        roughness: 0.18,
-        metalness: 0.82,
-        clearcoat: 1.0,
-        clearcoatRoughness: 0.1
-      });
-      const glassMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.1, metalness: 0.9 });
-
-      const body = new THREE.Mesh(new THREE.BoxGeometry(1.85, 0.7, 4.0), bodyMat);
-      body.position.y = 0.55;
-      body.castShadow = true;
-      body.receiveShadow = true;
-      group.add(body);
-
-      const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.6, 2.1), glassMat);
-      cabin.position.set(0, 1.1, -0.2);
-      cabin.castShadow = true;
-      cabin.receiveShadow = true;
-      group.add(cabin);
-
-      // Tail lights
-      const tlMat = new THREE.MeshStandardMaterial({ color: 0xff1e1e, emissive: 0xff0000, emissiveIntensity: 2.5 });
-      const tlL = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.16, 0.05), tlMat);
-      tlL.position.set(-0.65, 0.65, 2.02);
-      group.add(tlL);
-
-      const tlR = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.16, 0.05), tlMat);
-      tlR.position.set(0.65, 0.65, 2.02);
-      group.add(tlR);
-    }
-
-    // 2.5D High-Performance Contact Shadow
-    const shadowMat = new THREE.MeshBasicMaterial({
-      color: 0x050508,
-      transparent: true,
-      opacity: 0.75
-    });
-    const shadow = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 4.6), shadowMat);
-    shadow.rotation.x = -Math.PI / 2;
-    shadow.position.y = 0.02;
-    group.add(shadow);
-
-    const wheels: THREE.Mesh[] = [];
-    const wheelGeo = new THREE.CylinderGeometry(0.32, 0.32, 0.2, 10);
-    wheelGeo.rotateZ(Math.PI / 2);
-    const tireMat = new THREE.MeshBasicMaterial({ color: 0x18181b });
-
-    [-0.95, 0.95].forEach(wx => {
-      [-1.2, 1.2].forEach(wz => {
-        const w = new THREE.Mesh(wheelGeo, tireMat);
-        w.position.set(wx, 0.32, wz);
-        group.add(w);
-        wheels.push(w);
-      });
-    });
-
-    return { group, wheels };
+    return {
+      group: vehicle.group,
+      wheels: vehicle.wheels,
+      frontWheels: vehicle.frontWheels,
+      flasherLights: vehicle.flasherLights,
+      tailLights: vehicle.tailLights,
+      headLights: vehicle.headLights,
+      isEmergency: vehicle.isEmergency,
+      modelName: variety.name,
+      isTruck
+    };
   };
 
   // -------------------------------------------------------------
@@ -719,12 +662,20 @@ export function SunsetHighwayGame({
     playerCarGroup.add(headlightSpotR);
     playerCarGroup.add(headlightSpotR.target);
 
+    // =========================================================
+    // I. AUTHENTIC 3D PLAYER SPORTS CAR BODY & ALLOY WHEELS FROM KENNEY CAR KIT
+    // =========================================================
+    const playerVehicle = createPlayerCarKitVehicle(VEHICLE_MODELS.PLAYER_DEFAULT, 1.45);
+    playerCarGroup.add(playerVehicle.group);
+
     return {
       steeringWheelGroup,
       frontWheelGroupL,
       frontWheelGroupR,
       tireMeshL,
       tireMeshR,
+      playerCarWheels: playerVehicle.wheels,
+      playerCarFrontWheels: playerVehicle.frontWheels,
       clusterTexture,
       clusterCtx,
       headlightSpotL,
@@ -952,6 +903,8 @@ export function SunsetHighwayGame({
       frontWheelGroupR,
       tireMeshL,
       tireMeshR,
+      playerCarWheels,
+      playerCarFrontWheels,
       clusterTexture,
       clusterCtx,
       headlightSpotL,
@@ -960,6 +913,9 @@ export function SunsetHighwayGame({
 
     if (clusterCtx) updateClusterScreen(clusterCtx, BASE_CRUISE_SPEED, 0, 4, 2600);
     clusterTexture.needsUpdate = true;
+
+    // Trigger asynchronous model preload for all Kenney models
+    preloadCarKitModels().catch(err => console.warn('Kenney models preload error:', err));
 
     // Exhaust Smoke Particles for Player Car
     const particleCount = 35;
@@ -1117,14 +1073,21 @@ export function SunsetHighwayGame({
       sceneryItems.push(propGroup);
     }
 
-    // 10. Traffic Pool
+    // 10. Traffic Pool with Diverse 3D Vehicles from Kenney Car Kit
     const trafficPool: NPCTrafficCar[] = [];
-    const carColors = [0xd97706, 0x2563eb, 0x16a34a, 0xe11d48, 0x0284c7, 0x9333ea];
 
     for (let i = 0; i < TRAFFIC_COUNT; i++) {
-      const isTruck = i % 3 === 0;
-      const color = carColors[i % carColors.length];
-      const { group: carGroup, wheels } = createTrafficCar(isTruck, color);
+      const {
+        group: carGroup,
+        wheels,
+        frontWheels,
+        flasherLights,
+        tailLights,
+        headLights,
+        isEmergency,
+        modelName,
+        isTruck
+      } = createTrafficCar(i);
 
       const lane = i % LANES_COUNT;
       const x = LANE_POSITIONS[lane];
@@ -1136,13 +1099,19 @@ export function SunsetHighwayGame({
       trafficPool.push({
         mesh: carGroup,
         wheels,
+        frontWheels,
+        flasherLights,
+        tailLights,
+        headLights,
         x,
         z,
         lane,
         targetLane: lane,
         speedKmh: speed,
         targetSpeedKmh: speed,
-        isTruck
+        isTruck,
+        isEmergency,
+        modelName
       });
     }
 
@@ -1181,6 +1150,8 @@ export function SunsetHighwayGame({
       frontWheelGroupR,
       tireMeshL,
       tireMeshR,
+      playerCarWheels,
+      playerCarFrontWheels,
       clusterTexture,
       clusterCtx,
       roadPlane,
@@ -1557,6 +1528,24 @@ export function SunsetHighwayGame({
   }, []);
 
   // -------------------------------------------------------------
+  // CAMERA VIEW TOGGLER (Cockpit / Chase 3D / Hood Cam)
+  // -------------------------------------------------------------
+  const cycleCameraMode = useCallback(() => {
+    initAudio();
+    sounds.playButtonPress();
+    setCameraMode(prev => {
+      const next = prev === 'cockpit' ? 'chase' : (prev === 'chase' ? 'hood' : 'cockpit');
+      gameStateRef.current.cameraMode = next;
+      const alertLabel = next === 'cockpit'
+        ? '🎥 منظور قمرة القيادة الفاخرة'
+        : (next === 'chase' ? '🎥 منظور المتابعة الخارجي 3D' : '🎥 منظور الكبوت الرياضي');
+      setNearMissAlert(alertLabel);
+      setTimeout(() => setNearMissAlert(null), 1200);
+      return next;
+    });
+  }, [initAudio]);
+
+  // -------------------------------------------------------------
   // CONTROLLER COMMAND HANDLER (PS5 DUALSENSE & TV REMOTE SUPPORT)
   // -------------------------------------------------------------
   const handleControllerCommand = useCallback((cmd: any) => {
@@ -1572,6 +1561,11 @@ export function SunsetHighwayGame({
     } else if (cmd.type === 'camera_look_reset') {
       s.targetCameraLookYaw = 0;
       s.targetCameraLookPitch = 0;
+      return;
+    }
+
+    if (cmd.type === 'camera_mode' || cmd.type === 'toggle_camera') {
+      cycleCameraMode();
       return;
     }
 
@@ -1622,13 +1616,14 @@ export function SunsetHighwayGame({
         }
       }
       if (['SELECT', 'SHARE', 'CREATE'].includes(cmd.button)) onBackToMenu();
+      if (['VIEW', 'TOUCHPAD'].includes(cmd.button)) cycleCameraMode();
     } else if (cmd.type === 'button_up') {
       if (['LEFT', 'RIGHT'].includes(cmd.button)) s.steerAngle = 0;
       if (['R2', 'A', 'CROSS', 'UP'].includes(cmd.button)) s.isAccelerating = false;
       if (['L2', 'X', 'SQUARE', 'DOWN'].includes(cmd.button)) s.isBraking = false;
       if (['Y', 'TRIANGLE'].includes(cmd.button)) s.isHandbraking = false;
     }
-  }, [initAudio, onBackToMenu, startGameFromWelcome, triggerManualHeadlightFlash, restartGame]);
+  }, [initAudio, onBackToMenu, startGameFromWelcome, triggerManualHeadlightFlash, restartGame, cycleCameraMode]);
 
   useEffect(() => {
     if (controllerCommand) handleControllerCommand(controllerCommand);
@@ -1657,6 +1652,19 @@ export function SunsetHighwayGame({
       if (e.key === 'ArrowUp' || e.key === 'w') s.isAccelerating = true;
       if (e.key === 'ArrowDown' || e.key === 's') s.isBraking = true;
       if (e.key === ' ' || e.key === 'b') triggerManualHeadlightFlash();
+      if (e.key === 'c' || e.key === 'C' || e.key === 'v' || e.key === 'V') cycleCameraMode();
+      if (e.key === '1') {
+        setCameraMode('cockpit');
+        gameStateRef.current.cameraMode = 'cockpit';
+      }
+      if (e.key === '2') {
+        setCameraMode('chase');
+        gameStateRef.current.cameraMode = 'chase';
+      }
+      if (e.key === '3') {
+        setCameraMode('hood');
+        gameStateRef.current.cameraMode = 'hood';
+      }
       if (e.key === 'Escape') onBackToMenu();
       if (e.key === 'o' || e.key === 'O' || e.key === 'F2') {
         setShowDebug(prev => !prev);
@@ -1801,6 +1809,18 @@ export function SunsetHighwayGame({
         }
       }
 
+      // Player Car 3D Wheels Physics (Spinning & Steering from Kenney Car Model)
+      if (t3.playerCarWheels) {
+        t3.playerCarWheels.forEach(w => {
+          w.rotation.x += worldSpeed * dt * 7.5;
+        });
+      }
+      if (t3.playerCarFrontWheels) {
+        t3.playerCarFrontWheels.forEach(w => {
+          w.rotation.y = s.smoothSteer * 0.45;
+        });
+      }
+
       // Authentic 3D Steering Wheel Turning smoothly on spindle
       if (t3.steeringWheelGroup) {
         t3.steeringWheelGroup.rotation.z = -s.smoothSteer * 1.75;
@@ -1822,22 +1842,51 @@ export function SunsetHighwayGame({
       s.bodyRoll += (targetRoll - s.bodyRoll) * Math.min(1, dt * 8.0);
       t3.playerCarGroup.rotation.z = s.bodyRoll;
 
-      // Dynamic Driver Head & Camera Physics (Free look neck rotation + road vibe + engine tremor)
+      // Dynamic Driver Head & Multi-Perspective Camera Physics
       s.cameraLookYaw += (s.targetCameraLookYaw - s.cameraLookYaw) * Math.min(1, dt * 11.0);
       s.cameraLookPitch += (s.targetCameraLookPitch - s.cameraLookPitch) * Math.min(1, dt * 11.0);
 
       const roadVibe = Math.sin(now * 0.025) * (s.speedKmh / 120) * 0.0016;
       const engineTremor = (s.rpm / 6500) * (s.isAccelerating ? 0.0012 : 0.0004) * Math.sin(now * 0.08);
-      t3.camera.position.set(
-        -0.52 + Math.sin(s.cameraLookYaw) * 0.05,
-        1.14 + roadVibe + engineTremor + Math.sin(s.cameraLookPitch) * 0.03,
-        0.42 - Math.cos(s.cameraLookYaw) * 0.015 + (s.isBraking ? -0.018 : (s.isAccelerating ? 0.012 : 0))
-      );
-      t3.camera.rotation.set(
-        -0.04 + s.cameraLookPitch + s.suspensionPitch * 0.35,
-        s.cameraLookYaw,
-        -s.bodyRoll * 0.28
-      );
+
+      const activeView = s.cameraMode || 'cockpit';
+      if (activeView === 'cockpit') {
+        // Driver Seat Inside Cabin POV
+        t3.camera.position.set(
+          -0.52 + Math.sin(s.cameraLookYaw) * 0.05,
+          1.14 + roadVibe + engineTremor + Math.sin(s.cameraLookPitch) * 0.03,
+          0.42 - Math.cos(s.cameraLookYaw) * 0.015 + (s.isBraking ? -0.018 : (s.isAccelerating ? 0.012 : 0))
+        );
+        t3.camera.rotation.set(
+          -0.04 + s.cameraLookPitch + s.suspensionPitch * 0.35,
+          s.cameraLookYaw,
+          -s.bodyRoll * 0.28
+        );
+      } else if (activeView === 'chase') {
+        // High-Speed 3D Third-Person Chase Cam
+        t3.camera.position.set(
+          0 + Math.sin(s.cameraLookYaw) * 0.35,
+          2.2 + roadVibe * 0.4 + Math.sin(s.cameraLookPitch) * 0.25,
+          5.2 - Math.cos(s.cameraLookYaw) * 0.2 + (s.isBraking ? -0.06 : (s.isAccelerating ? 0.06 : 0))
+        );
+        t3.camera.rotation.set(
+          -0.15 + s.cameraLookPitch + s.suspensionPitch * 0.2,
+          s.cameraLookYaw,
+          -s.bodyRoll * 0.15
+        );
+      } else {
+        // Dynamic Bonnet / Hood Racing Cam
+        t3.camera.position.set(
+          0 + Math.sin(s.cameraLookYaw) * 0.05,
+          1.18 + roadVibe + engineTremor + Math.sin(s.cameraLookPitch) * 0.03,
+          -0.85 - Math.cos(s.cameraLookYaw) * 0.015
+        );
+        t3.camera.rotation.set(
+          -0.03 + s.cameraLookPitch + s.suspensionPitch * 0.4,
+          s.cameraLookYaw,
+          -s.bodyRoll * 0.3
+        );
+      }
 
       // 3. Headlight Intensity Check
       if (s.highBeamTimer > 0) {
@@ -1867,7 +1916,7 @@ export function SunsetHighwayGame({
         if (prop.position.z > 20) prop.position.z -= ROAD_SEGMENT_LENGTH;
       });
 
-      // 5. Update NPC Traffic with Smooth Speed Interpolation
+      // 5. Update NPC Traffic with Kenney Models Animation (Wheels & Emergency Sirens)
       t3.trafficPool.forEach((car, idx) => {
         car.speedKmh += (car.targetSpeedKmh - car.speedKmh) * dt * 2.0;
         const trafficWorldSpeed = (car.speedKmh / 3.6) * 0.22;
@@ -1884,9 +1933,19 @@ export function SunsetHighwayGame({
         }
         car.mesh.position.set(car.x, 0, car.z);
 
+        // Rotate Kenney 3D wheels
         car.wheels.forEach(w => {
-          w.rotation.x += trafficWorldSpeed * dt * 4;
+          w.rotation.x += trafficWorldSpeed * dt * 4.5;
         });
+
+        // Alternate emergency flashing beacon lights on Police, Ambulance, Firetruck
+        if (car.flasherLights && car.flasherLights.length >= 2) {
+          const flashState = Math.floor(now * 0.008) % 2 === 0;
+          const mat0 = car.flasherLights[0].material as THREE.MeshStandardMaterial;
+          const mat1 = car.flasherLights[1].material as THREE.MeshStandardMaterial;
+          if (mat0) mat0.emissiveIntensity = flashState ? 6.0 : 0.2;
+          if (mat1) mat1.emissiveIntensity = flashState ? 0.2 : 6.0;
+        }
 
         // Safe Respawn Ahead when passing behind camera
         if (car.z > 25) {
@@ -2062,7 +2121,7 @@ export function SunsetHighwayGame({
         >
           {/* Top Mobile Bar: Camera Reset & Actions (Speed is displayed directly on the car's in-cabin OLED cluster) */}
           <div className="flex items-center justify-between w-full pointer-events-auto">
-            {/* Camera Recenter Button (Speed is now displayed on in-car OLED gauge behind the wheel) */}
+            {/* Camera Recenter and Camera View Switch */}
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -2071,7 +2130,17 @@ export function SunsetHighwayGame({
                 title="إعادة توجيه الكاميرا للأمام"
               >
                 <Compass className="w-3.5 h-3.5 text-amber-400" />
-                <span>توسيط الرؤية</span>
+                <span>توسيط</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={cycleCameraMode}
+                className="flex items-center gap-1.5 bg-slate-900/85 hover:bg-slate-800 border border-cyan-500/50 hover:border-cyan-400 active:scale-95 px-3 py-1.5 rounded-xl text-xs font-bold text-cyan-300 shadow-lg transition-all"
+                title="تبديل منظور الكاميرا"
+              >
+                <Camera className="w-3.5 h-3.5 text-cyan-400" />
+                <span>{cameraMode === 'cockpit' ? 'قمرة القيادة' : (cameraMode === 'chase' ? 'خارجي 3D' : 'الكبوت')}</span>
               </button>
             </div>
 
@@ -2319,8 +2388,18 @@ export function SunsetHighwayGame({
             )}
           </div>
 
-          {/* Minimal High Score & Clean Exit Badge (Only on Touch/Mobile screen) */}
-          <div className="flex items-center gap-3 pointer-events-auto">
+          {/* Minimal High Score, Camera Toggle & Clean Exit Badge */}
+          <div className="flex items-center gap-2.5 pointer-events-auto">
+            <button
+              type="button"
+              onClick={cycleCameraMode}
+              className="flex items-center gap-1.5 bg-slate-900/85 hover:bg-slate-800 border border-cyan-500/50 hover:border-cyan-400 active:scale-95 px-3 py-1.5 rounded-2xl text-xs font-bold text-cyan-300 shadow-lg backdrop-blur-md transition-all cursor-pointer"
+              title="تبديل منظور الكاميرا [C]"
+            >
+              <Camera className="w-3.5 h-3.5 text-cyan-400" />
+              <span>{cameraMode === 'cockpit' ? 'قمرة القيادة [C]' : (cameraMode === 'chase' ? 'خارجي 3D [C]' : 'الكبوت [C]')}</span>
+            </button>
+
             <div className="bg-slate-950/80 border border-slate-800 rounded-2xl px-3.5 py-1.5 text-right font-mono backdrop-blur-md">
               <span className="text-[10px] text-slate-400 block">أعلى سكور</span>
               <span className="text-xs font-bold text-amber-400">{highScore}</span>
@@ -2381,7 +2460,7 @@ export function SunsetHighwayGame({
             </div>
 
             {/* Control Guide */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 pt-2 text-[11px] text-slate-400 font-mono border-t border-slate-800/80">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-2 pt-2 text-[11px] text-slate-400 font-mono border-t border-slate-800/80">
               <div className="p-2 rounded-xl bg-slate-950/60 border border-slate-800">
                 <span className="text-amber-400 font-bold block">التوجيه</span>
                 <span>الأسهم / العصا</span>
@@ -2397,6 +2476,10 @@ export function SunsetHighwayGame({
               <div className="p-2 rounded-xl bg-slate-950/60 border border-slate-800">
                 <span className="text-cyan-400 font-bold block">الكشافات</span>
                 <span>زر B / مسافة</span>
+              </div>
+              <div className="p-2 rounded-xl bg-slate-950/60 border border-slate-800 col-span-2 md:col-span-1">
+                <span className="text-indigo-400 font-bold block">الكاميرا</span>
+                <span>زر C / 1,2,3</span>
               </div>
             </div>
           </div>
