@@ -25,6 +25,9 @@ interface SunsetHighwayGameProps {
   onBackToMenu: () => void;
   controllerCommand?: any;
   showTouchControls?: boolean;
+  tvQualityMode?: 'high' | 'low' | 'auto';
+  showDebugStats?: boolean;
+  autoStart?: boolean;
 }
 
 // -------------------------------------------------------------
@@ -61,12 +64,15 @@ interface NPCTrafficCar {
 export function SunsetHighwayGame({
   onBackToMenu,
   controllerCommand,
-  showTouchControls = false
+  showTouchControls = false,
+  tvQualityMode = 'auto',
+  showDebugStats = false,
+  autoStart = false
 }: SunsetHighwayGameProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  // HUD States
-  const [isWelcomeModalOpen, setIsWelcomeModalOpen] = useState(true);
+  // HUD States - when autoStart is enabled (TV mode with controller), skip welcome modal entirely
+  const [isWelcomeModalOpen, setIsWelcomeModalOpen] = useState(!autoStart);
   const [isGameOver, setIsGameOver] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [score, setScore] = useState(0);
@@ -74,16 +80,25 @@ export function SunsetHighwayGame({
     return parseInt(localStorage.getItem('sunset_drive_3d_highscore') || '0', 10);
   });
   const [distanceKm, setDistanceKm] = useState(0);
-  const [currentSpeed, setCurrentSpeed] = useState(0);
+  const [currentSpeed, setCurrentSpeed] = useState(autoStart ? BASE_CRUISE_SPEED : 0);
   const [nearMissAlert, setNearMissAlert] = useState<string | null>(null);
   const [isHighBeaming, setIsHighBeaming] = useState(false);
+  const [showDebug, setShowDebug] = useState(showDebugStats);
+  const [debugInfo, setDebugInfo] = useState<{
+    fps: number;
+    drawCalls: number;
+    quality: string;
+    isWebGL2: boolean;
+    postProcessing: boolean;
+    shadows: boolean;
+  } | null>(null);
 
   const highScoreRef = useRef(highScore);
 
   // Gameplay State Ref (Maintains 60FPS physics uninterrupted)
   const gameStateRef = useRef({
-    isWelcomeOpen: true,
-    speedKmh: 0,
+    isWelcomeOpen: !autoStart,
+    speedKmh: autoStart ? BASE_CRUISE_SPEED : 0,
     playerX: LANE_POSITIONS[1], // Start in lane 1 (-1.8)
     steerAngle: 0,
     smoothSteer: 0,
@@ -840,7 +855,9 @@ export function SunsetHighwayGame({
     const container = containerRef.current;
     const width = container.clientWidth || window.innerWidth;
     const height = container.clientHeight || window.innerHeight;
-    const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent);
+    const isSmartTv = typeof window !== 'undefined' && (/webOS|Web0S|SMART-TV|SmartTV|Tizen|GoogleTV|AndroidTV/i.test(navigator.userAgent) || window.location.hash === '#tv');
+    const isMobile = typeof navigator !== 'undefined' && /Android|iPhone|iPad/i.test(navigator.userAgent);
+    const isLowQuality = tvQualityMode === 'low' || (tvQualityMode === 'auto' && isSmartTv);
 
     // 1. Scene & Sunset Sky Atmosphere
     const scene = new THREE.Scene();
@@ -876,33 +893,44 @@ export function SunsetHighwayGame({
     // 2. Camera Setup (Driver POV with Wide Forward Highway Framing)
     const camera = new THREE.PerspectiveCamera(66, width / height, 0.1, 320);
 
-    // 3. Renderer with Smart Performance Options & PCFSoftShadowMap
+    // 3. Renderer with Smart Performance Options, WebGL context lost handler & Adaptive Quality
     const renderer = new THREE.WebGLRenderer({
-      antialias: true,
+      antialias: !isLowQuality,
       powerPreference: 'high-performance'
     });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobile ? 1.5 : 2.0));
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.setPixelRatio(isLowQuality ? 1.0 : Math.min(window.devicePixelRatio, isMobile ? 1.5 : 2.0));
+    renderer.shadowMap.enabled = !isLowQuality;
+    if (!isLowQuality) {
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    }
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.15;
     container.appendChild(renderer.domElement);
 
+    // WebGL Context Lost protection to prevent white screen
+    const handleContextLost = (e: Event) => {
+      e.preventDefault();
+      console.warn('WebGL context lost - handled safely');
+    };
+    renderer.domElement.addEventListener('webglcontextlost', handleContextLost);
+
     // 4. Enhanced Lighting & Soft Directional Sunlight
     const sunLight = new THREE.DirectionalLight(0xffa254, 2.6);
     sunLight.position.set(60, 45, -90);
-    sunLight.castShadow = true;
-    sunLight.shadow.mapSize.width = isMobile ? 1024 : 2048;
-    sunLight.shadow.mapSize.height = isMobile ? 1024 : 2048;
-    sunLight.shadow.camera.left = -60;
-    sunLight.shadow.camera.right = 60;
-    sunLight.shadow.camera.top = 60;
-    sunLight.shadow.camera.bottom = -60;
-    sunLight.shadow.camera.near = 1;
-    sunLight.shadow.camera.far = 300;
-    sunLight.shadow.bias = -0.0001;
-    sunLight.shadow.normalBias = 0.02;
+    sunLight.castShadow = !isLowQuality;
+    if (!isLowQuality) {
+      sunLight.shadow.mapSize.width = isMobile ? 1024 : 2048;
+      sunLight.shadow.mapSize.height = isMobile ? 1024 : 2048;
+      sunLight.shadow.camera.left = -60;
+      sunLight.shadow.camera.right = 60;
+      sunLight.shadow.camera.top = 60;
+      sunLight.shadow.camera.bottom = -60;
+      sunLight.shadow.camera.near = 1;
+      sunLight.shadow.camera.far = 300;
+      sunLight.shadow.bias = -0.0001;
+      sunLight.shadow.normalBias = 0.02;
+    }
     scene.add(sunLight);
 
     const hemiLight = new THREE.HemisphereLight(0x87ceeb, 0x331a00, 0.85);
@@ -1118,18 +1146,30 @@ export function SunsetHighwayGame({
       });
     }
 
-    // 11. Post-Processing EffectComposer with UnrealBloomPass
-    const composer = new EffectComposer(renderer);
-    const renderPass = new RenderPass(scene, camera);
-    composer.addPass(renderPass);
+    // 11. Post-Processing EffectComposer with UnrealBloomPass (Safe try/catch fallback)
+    let composer: EffectComposer | null = null;
+    let postProcessingEnabled = false;
 
-    const bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(width, height),
-      0.26,
-      0.32,
-      0.88
-    );
-    composer.addPass(bloomPass);
+    if (!isLowQuality) {
+      try {
+        composer = new EffectComposer(renderer);
+        const renderPass = new RenderPass(scene, camera);
+        composer.addPass(renderPass);
+
+        const bloomPass = new UnrealBloomPass(
+          new THREE.Vector2(width, height),
+          0.26,
+          0.32,
+          0.88
+        );
+        composer.addPass(bloomPass);
+        postProcessingEnabled = true;
+      } catch (err) {
+        console.warn('Post-processing unavailable on this device/TV, falling back to standard renderer:', err);
+        composer = null;
+        postProcessingEnabled = false;
+      }
+    }
 
     threeRef.current = {
       scene,
@@ -1151,7 +1191,7 @@ export function SunsetHighwayGame({
       trafficPool,
       headlightSpotL,
       headlightSpotR,
-      composer,
+      composer: composer || undefined,
       exhaustParticles
     };
 
@@ -1163,13 +1203,16 @@ export function SunsetHighwayGame({
       threeRef.current.camera.updateProjectionMatrix();
       threeRef.current.renderer.setSize(w, h);
       if (threeRef.current.composer) {
-        threeRef.current.composer.setSize(w, h);
+        try {
+          threeRef.current.composer.setSize(w, h);
+        } catch {}
       }
     };
     window.addEventListener('resize', handleResize);
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      renderer.domElement.removeEventListener('webglcontextlost', handleContextLost);
       renderer.dispose();
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
@@ -1190,6 +1233,19 @@ export function SunsetHighwayGame({
     s.speedKmh = BASE_CRUISE_SPEED;
     setCurrentSpeed(BASE_CRUISE_SPEED);
   }, [initAudio]);
+
+  useEffect(() => {
+    if (autoStart) {
+      initAudio();
+      setIsWelcomeModalOpen(false);
+      const s = gameStateRef.current;
+      s.isWelcomeOpen = false;
+      if (s.speedKmh === 0) {
+        s.speedKmh = BASE_CRUISE_SPEED;
+        setCurrentSpeed(BASE_CRUISE_SPEED);
+      }
+    }
+  }, [autoStart, initAudio]);
 
   // Restart Game Function defined before controller handler
   const restartGame = useCallback(() => {
@@ -1602,6 +1658,9 @@ export function SunsetHighwayGame({
       if (e.key === 'ArrowDown' || e.key === 's') s.isBraking = true;
       if (e.key === ' ' || e.key === 'b') triggerManualHeadlightFlash();
       if (e.key === 'Escape') onBackToMenu();
+      if (e.key === 'o' || e.key === 'O' || e.key === 'F2') {
+        setShowDebug(prev => !prev);
+      }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
       if (['ArrowLeft', 'a', 'ArrowRight', 'd'].includes(e.key)) s.steerAngle = 0;
@@ -1644,6 +1703,8 @@ export function SunsetHighwayGame({
     let animId: number;
     let lastTime = performance.now();
     let hudTimer = 0;
+    let debugTimer = 0;
+    let frameCount = 0;
 
     const animate = (now: number) => {
       animId = requestAnimationFrame(animate);
@@ -1908,9 +1969,34 @@ export function SunsetHighwayGame({
         t3.exhaustParticles.geometry.attributes.position.needsUpdate = true;
       }
 
-      // Render 3D Scene with Post-Processing Bloom
+      // Update debug stats telemetry
+      if (showDebug) {
+        frameCount++;
+        debugTimer += dt;
+        if (debugTimer >= 0.5) {
+          const fps = Math.round(frameCount / debugTimer);
+          setDebugInfo({
+            fps,
+            drawCalls: t3.renderer.info.render.calls,
+            quality: tvQualityMode === 'low' ? 'TV Low (خفيف)' : 'High (عالي)',
+            isWebGL2: !!t3.renderer.capabilities.isWebGL2,
+            postProcessing: !!t3.composer,
+            shadows: t3.renderer.shadowMap.enabled
+          });
+          frameCount = 0;
+          debugTimer = 0;
+        }
+      }
+
+      // Render 3D Scene with Post-Processing Bloom or Basic Renderer
       if (t3.composer) {
-        t3.composer.render();
+        try {
+          t3.composer.render();
+        } catch (err) {
+          console.warn('Composer render error, falling back to standard renderer:', err);
+          t3.composer = undefined;
+          t3.renderer.render(t3.scene, t3.camera);
+        }
       } else {
         t3.renderer.render(t3.scene, t3.camera);
       }
@@ -1931,6 +2017,42 @@ export function SunsetHighwayGame({
         onPointerCancel={handlePointerUpLook}
         className="w-full h-full absolute inset-0 z-0 touch-none cursor-grab active:cursor-grabbing"
       />
+
+      {/* Telemetry Debug Stats Overlay (Toggled via Key 'O' or showDebugStats) */}
+      {showDebug && debugInfo && (
+        <div className="absolute top-4 left-4 z-40 bg-slate-950/90 backdrop-blur-md border border-cyan-500/50 rounded-2xl p-3 text-[11px] font-mono text-cyan-300 space-y-1.5 shadow-2xl pointer-events-none select-none" dir="ltr">
+          <div className="font-bold text-white border-b border-slate-800 pb-1 flex justify-between items-center gap-6">
+            <span>PERFORMANCE DEBUG</span>
+            <span className={`px-2 py-0.5 rounded text-xs font-black ${debugInfo.fps >= 30 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'}`}>
+              {debugInfo.fps} FPS
+            </span>
+          </div>
+          <div className="flex justify-between gap-6">
+            <span className="text-slate-400">Draw Calls:</span>
+            <span className="font-bold text-white">{debugInfo.drawCalls}</span>
+          </div>
+          <div className="flex justify-between gap-6">
+            <span className="text-slate-400">TV Quality Mode:</span>
+            <span className="font-bold text-amber-400">{debugInfo.quality}</span>
+          </div>
+          <div className="flex justify-between gap-6">
+            <span className="text-slate-400">WebGL2:</span>
+            <span className="font-bold text-white">{debugInfo.isWebGL2 ? 'YES' : 'NO'}</span>
+          </div>
+          <div className="flex justify-between gap-6">
+            <span className="text-slate-400">Post Processing:</span>
+            <span className={`font-bold ${debugInfo.postProcessing ? 'text-cyan-400' : 'text-slate-500'}`}>
+              {debugInfo.postProcessing ? 'ON' : 'OFF'}
+            </span>
+          </div>
+          <div className="flex justify-between gap-6">
+            <span className="text-slate-400">Shadows:</span>
+            <span className={`font-bold ${debugInfo.shadows ? 'text-cyan-400' : 'text-slate-500'}`}>
+              {debugInfo.shadows ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* ON-SCREEN TOUCH CONTROLS (ONLY RENDERED ON MOBILE TOUCH PLAY) */}
       {showTouchControls && (

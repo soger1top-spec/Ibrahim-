@@ -13,6 +13,18 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 
 app.use(express.json());
 
+// Enable CORS for native mobile/TV APK clients
+app.use((_req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (_req.method === 'OPTIONS') {
+    res.sendStatus(204);
+    return;
+  }
+  next();
+});
+
 // -------------------------------------------------------------
 // REAL-TIME TV GAME WEBSOCKET SERVER & ROOM REGISTRY
 // -------------------------------------------------------------
@@ -20,10 +32,8 @@ interface TvRoom {
   code: string;
   tvWs: WebSocket | null;
   tvName: string;
-  controllerWs: WebSocket | null;
-  controllerName: string | null;
+  controllers: Set<WebSocket>;
   createdAt: number;
-  lastActive: number;
 }
 
 const rooms = new Map<string, TvRoom>();
@@ -32,25 +42,68 @@ function generatePin(): string {
   return Math.floor(1000 + Math.random() * 9000).toString();
 }
 
+function sendJson(ws: WebSocket | null, type: string, payload: Record<string, any> = {}) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(JSON.stringify({ type, ...payload }));
+    } catch (e) {
+      console.error('Failed to send WS message:', e);
+    }
+  }
+}
+
 // REST API for checking active TV games or pairing
 app.get('/api/tv/rooms', (_req, res) => {
-  const activeRooms = Array.from(rooms.values())
-    .filter(r => r.tvWs && r.tvWs.readyState === WebSocket.OPEN)
-    .map(r => ({
-      code: r.code,
-      tvName: r.tvName,
-      isOccupied: !!r.controllerWs && r.controllerWs.readyState === WebSocket.OPEN,
-      createdAt: r.createdAt
-    }));
-  res.json({ rooms: activeRooms });
+  const result: Array<{ code: string; tvName: string }> = [];
+  for (const [code, room] of rooms.entries()) {
+    if (room.tvWs && room.tvWs.readyState === WebSocket.OPEN) {
+      result.push({
+        code,
+        tvName: room.tvName
+      });
+    }
+  }
+  res.json({ rooms: result });
 });
 
 // WebSocket Server attached to same HTTP Server on /api/tv-ws
 const wss = new WebSocketServer({ server, path: '/api/tv-ws' });
 
-wss.on('connection', (ws: WebSocket, req) => {
-  let userRole: 'tv_host' | 'controller' | null = null;
-  let userRoomCode: string | null = null;
+function disconnectController(ws: any) {
+  const code = ws.roomCode;
+  if (!code) return;
+  const room = rooms.get(code);
+  if (!room) return;
+
+  room.controllers.delete(ws);
+  if (room.tvWs && room.tvWs.readyState === WebSocket.OPEN) {
+    sendJson(room.tvWs, 'controller_left', {
+      controllerName: ws.controllerName || 'يد تحكم'
+    });
+  }
+  ws.roomCode = null;
+}
+
+function closeTvRoom(ws: any) {
+  const code = ws.roomCode;
+  if (!code) return;
+  const room = rooms.get(code);
+  if (!room) return;
+
+  for (const ctrl of room.controllers) {
+    sendJson(ctrl, 'tv_disconnected', {
+      message: 'تم إغلاق شاشة التلفاز'
+    });
+    (ctrl as any).roomCode = null;
+  }
+  rooms.delete(code);
+  ws.roomCode = null;
+}
+
+wss.on('connection', (ws: WebSocket & { role?: string; roomCode?: string | null; controllerName?: string | null }) => {
+  ws.role = undefined;
+  ws.roomCode = null;
+  ws.controllerName = null;
 
   ws.on('message', (rawData) => {
     try {
@@ -58,91 +111,86 @@ wss.on('connection', (ws: WebSocket, req) => {
 
       // 1. TV HOST REGISTERS A ROOM ("لعبة التلفزيون")
       if (data.type === 'register_tv_host') {
-        userRole = 'tv_host';
-        const code = data.code || generatePin();
-        userRoomCode = code;
+        const code = String(data.code || generatePin());
+        const tvName = data.tvName || 'شاشة التلفاز';
 
         const room: TvRoom = {
           code,
           tvWs: ws,
-          tvName: data.tvName || 'شاشة التلفاز الرئيسية',
-          controllerWs: null,
-          controllerName: null,
-          createdAt: Date.now(),
-          lastActive: Date.now()
+          tvName,
+          controllers: new Set<WebSocket>(),
+          createdAt: Date.now()
         };
         rooms.set(code, room);
 
-        ws.send(JSON.stringify({
-          type: 'tv_registered',
+        ws.role = 'tv';
+        ws.roomCode = code;
+
+        sendJson(ws, 'tv_registered', {
           code,
-          tvName: room.tvName,
-          status: 'searching'
-        }));
+          tvName
+        });
       }
 
-      // 2. PHONE CONTROLLER CONNECTS TO TV ("اتصال التلفاز / بحث عن طالب اتصال")
+      // 2. PHONE CONTROLLER CONNECTS TO TV ("يد التلفاز")
       else if (data.type === 'connect_controller') {
-        userRole = 'controller';
-        let targetCode = data.code;
+        let targetCode = data.code ? String(data.code) : '';
 
         // Auto-find latest active waiting TV room if no specific code provided
         if (!targetCode) {
-          const waitingRooms = Array.from(rooms.values()).filter(
-            r => r.tvWs && r.tvWs.readyState === WebSocket.OPEN && (!r.controllerWs || r.controllerWs.readyState !== WebSocket.OPEN)
-          );
-          if (waitingRooms.length > 0) {
-            targetCode = waitingRooms[waitingRooms.length - 1].code;
+          const activeCodes = Array.from(rooms.keys());
+          if (activeCodes.length > 0) {
+            targetCode = activeCodes[activeCodes.length - 1];
           }
         }
 
         const room = targetCode ? rooms.get(targetCode) : null;
 
         if (room && room.tvWs && room.tvWs.readyState === WebSocket.OPEN) {
-          userRoomCode = targetCode;
-          room.controllerWs = ws;
-          room.controllerName = data.controllerName || 'يد تحكم الجوال الذكية';
-          room.lastActive = Date.now();
+          ws.role = 'controller';
+          ws.roomCode = targetCode;
+          ws.controllerName = data.controllerName || 'يد تحكم الجوال';
+          room.controllers.add(ws);
 
           // Notify Phone Controller: Connected!
-          ws.send(JSON.stringify({
-            type: 'controller_connected',
+          sendJson(ws, 'controller_connected', {
             code: targetCode,
-            tvName: room.tvName,
-            status: 'connected'
-          }));
+            tvName: room.tvName
+          });
 
-          // Notify TV Screen: Controller Connected! Start Game!
-          room.tvWs.send(JSON.stringify({
-            type: 'controller_joined',
-            controllerName: room.controllerName,
-            status: 'connected'
-          }));
+          // Notify TV Screen: Controller Joined! Start/Unpause Game!
+          sendJson(room.tvWs, 'controller_joined', {
+            controllerName: ws.controllerName
+          });
         } else {
-          ws.send(JSON.stringify({
-            type: 'error',
-            message: 'لم يتم العثور على شاشة تلفاز نشطة في وضع البحث. يرجى فتح (لعبة التلفزيون) أولاً.'
-          }));
+          sendJson(ws, 'error', {
+            message: 'لم يتم العثور على شاشة تلفاز نشطة. تأكد من فتح "لعبة التلفزيون" أولاً.'
+          });
         }
       }
 
       // 3. PHONE CONTROLLER TRANSMITS LIVE INPUT COMMANDS TO TV GAME
       else if (data.type === 'controller_input') {
-        if (userRoomCode) {
-          const room = rooms.get(userRoomCode);
+        if (ws.role === 'controller' && ws.roomCode) {
+          const room = rooms.get(ws.roomCode);
           if (room && room.tvWs && room.tvWs.readyState === WebSocket.OPEN) {
-            room.lastActive = Date.now();
-            room.tvWs.send(JSON.stringify({
-              type: 'controller_command',
+            sendJson(room.tvWs, 'controller_command', {
               command: data.command
-            }));
+            });
           }
         }
       }
 
-      // 4. PING / HEARTBEAT
+      // 4. DISCONNECT EXPLICIT ACTIONS
+      else if (data.type === 'controller_disconnected') {
+        disconnectController(ws);
+      } else if (data.type === 'tv_closed') {
+        closeTvRoom(ws);
+      }
+
+      // 5. PING / HEARTBEAT
       else if (data.type === 'ping') {
-        ws.send(JSON.stringify({ type: 'pong' }));
+        sendJson(ws, 'pong');
       }
     } catch (err) {
       console.error('Error handling WebSocket message:', err);
@@ -150,28 +198,10 @@ wss.on('connection', (ws: WebSocket, req) => {
   });
 
   ws.on('close', () => {
-    if (userRoomCode) {
-      const room = rooms.get(userRoomCode);
-      if (room) {
-        if (userRole === 'tv_host') {
-          if (room.controllerWs && room.controllerWs.readyState === WebSocket.OPEN) {
-            room.controllerWs.send(JSON.stringify({
-              type: 'tv_disconnected',
-              message: 'تم إغلاق شاشة التلفاز'
-            }));
-          }
-          rooms.delete(userRoomCode);
-        } else if (userRole === 'controller') {
-          room.controllerWs = null;
-          room.controllerName = null;
-          if (room.tvWs && room.tvWs.readyState === WebSocket.OPEN) {
-            room.tvWs.send(JSON.stringify({
-              type: 'controller_left',
-              status: 'searching'
-            }));
-          }
-        }
-      }
+    if (ws.role === 'tv') {
+      closeTvRoom(ws);
+    } else if (ws.role === 'controller') {
+      disconnectController(ws);
     }
   });
 });

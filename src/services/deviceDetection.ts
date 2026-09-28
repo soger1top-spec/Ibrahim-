@@ -94,3 +94,58 @@ export function getDeviceInfo(): DeviceInfo {
     userAgent: ua
   };
 }
+
+export function requestRealFullscreen(targetElement?: Element | null): void {
+  if (typeof document === 'undefined') return;
+  const target = (targetElement || document.documentElement) as any;
+  const doc = document as any;
+
+  if (
+    !doc.fullscreenElement &&
+    !doc.webkitFullscreenElement &&
+    !doc.mozFullScreenElement &&
+    !doc.msFullscreenElement
+  ) {
+    const rfs =
+      target.requestFullscreen ||
+      target.webkitRequestFullscreen ||
+      target.mozRequestFullScreen ||
+      target.msRequestFullscreen;
+
+    if (rfs) {
+      try {
+        const p = rfs.call(target);
+        if (p && typeof p.catch === 'function') {
+          p.catch(() => {});
+        }
+      } catch {}
+    }
+  }
+}
+
+export function exitRealFullscreen(): void {
+  if (typeof document === 'undefined') return;
+  const doc = document as any;
+
+  if (
+    doc.fullscreenElement ||
+    doc.webkitFullscreenElement ||
+    doc.mozFullScreenElement ||
+    doc.msFullscreenElement
+  ) {
+    const efs =
+      doc.exitFullscreen ||
+      doc.webkitExitFullscreen ||
+      doc.mozCancelFullScreen ||
+      doc.msExitFullscreen;
+
+    if (efs) {
+      try {
+        const p = efs.call(doc);
+        if (p && typeof p.catch === 'function') {
+          p.catch(() => {});
+        }
+      } catch {}
+    }
+  }
+}

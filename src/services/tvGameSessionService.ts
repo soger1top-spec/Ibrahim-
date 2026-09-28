@@ -1,4 +1,5 @@
 import { controllerBus } from './controllerBus';
+import { getTvWebSocketUrl, getTvRoomsApiUrl } from './serverConfig';
 
 export type TvConnectionStatus = 'idle' | 'searching' | 'connecting' | 'connected' | 'disconnected';
 
@@ -74,9 +75,7 @@ class TvGameSessionService {
   private initWebSocket() {
     if (typeof window === 'undefined') return;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
-    const wsUrl = `${protocol}//${host}/api/tv-ws`;
+    const wsUrl = getTvWebSocketUrl();
 
     try {
       this.ws = new WebSocket(wsUrl);
@@ -236,14 +235,17 @@ class TvGameSessionService {
     let targetCode = specificPin;
     if (!targetCode) {
       try {
-        const res = await fetch('/api/tv/rooms');
+        const roomsApi = getTvRoomsApiUrl();
+        const res = await fetch(roomsApi);
         if (res.ok) {
           const data = await res.json();
           if (data.rooms && data.rooms.length > 0) {
             targetCode = data.rooms[data.rooms.length - 1].code;
           }
         }
-      } catch {}
+      } catch (err) {
+        console.warn('Failed to fetch active TV rooms via REST, relying on WebSocket discovery', err);
+      }
     }
 
     // Send connection request via WebSocket

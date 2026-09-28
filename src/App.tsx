@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { PhoneView } from './components/PhoneView';
 import { TvPresentationView } from './components/TvPresentationView';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { detectIsSmartTv } from './services/deviceDetection';
 
 export default function App() {
@@ -24,16 +25,20 @@ export default function App() {
   // When running on Smart TV: Display pure 3D game immediately with ZERO on-screen buttons
   if (isTvMode) {
     return (
-      <div className="fixed inset-0 w-screen h-screen bg-slate-950 text-slate-100 overflow-hidden select-none z-[9999]">
-        <TvPresentationView />
-      </div>
+      <ErrorBoundary fallbackTitle="حدث خطأ في واجهة التلفاز">
+        <div className="fixed inset-0 w-screen h-screen bg-slate-950 text-slate-100 overflow-hidden select-none z-[9999]">
+          <TvPresentationView onExitTvMode={() => setIsTvMode(false)} />
+        </div>
+      </ErrorBoundary>
     );
   }
 
   // When running on Mobile Phone
   return (
-    <div className="relative min-h-screen bg-slate-950 text-slate-100">
-      <PhoneView />
-    </div>
+    <ErrorBoundary fallbackTitle="حدث خطأ في واجهة اللعبة">
+      <div className="relative min-h-screen bg-slate-950 text-slate-100">
+        <PhoneView />
+      </div>
+    </ErrorBoundary>
   );
 }
